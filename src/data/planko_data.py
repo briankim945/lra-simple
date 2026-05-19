@@ -209,7 +209,7 @@ if __name__ == "__main__":
     # Quick test
     import sys
     sys.path.insert(0, '.')
-    from cabc_utils import get_transform_wo_crop
+    from lra_simple.data.data_utils import get_transform_wo_crop
     import timm
 
     # Create a simple transform
