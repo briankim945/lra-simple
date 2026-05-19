@@ -5,7 +5,11 @@ This repo provides the framework for examining the performance of a library of p
 ## Setup
 
 ```bash
-git clone https://github.com/briankim945/your-repo.git
+git clone https://github.com/briankim945/lra-three-zoo.git
 cd lra-simple
 pip install -e .
 ```
+
+To remove, run:
+
+```pip uninstall lra-simple```
