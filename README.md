@@ -13,3 +13,13 @@ pip install -e .
 To remove, run:
 
 ```pip uninstall lra-simple```
+
+## Structure
+
+### Linear Probing
+
+The pipeline takes in a set of input data and produces the frozen weights of the target model at the penultimate depth for each image. We instantiate a range of lightweight linear probes using a predefined set of configurations for a grid search. The linear probes are trained and evaluated on the model's frozen weights, with the top-performing being recorded and its weights and configuration being saved.
+
+### Fine-Tuning
+
+The pipeline uses the trainable attribute of PyTorch models to further fine-tune a given model on the provided dataset. This is significantly more compute- and time-intensive than linear probing.
