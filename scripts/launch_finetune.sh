@@ -16,7 +16,6 @@ set -e
 # DEFAULT CONFIGURATION
 # =============================================================================
 
-PARENT_DIR=""
 TASK=""
 DATA_DIR=""
 TRAIN_SPLIT=""
@@ -24,7 +23,7 @@ EPOCHS=30
 NUM_WORKERS=4
 OUTPUT_DIR="results"
 GPU_COUNT=4
-MODELS_CSV="assets/timm_models.csv"
+MODELS_CSV=""
 MODELS_LIST=""
 SKIP_NON_224=""
 MAX_INPUT_SIZE=""
@@ -277,7 +276,7 @@ run_gpu() {
         MODEL_ARG="--models_csv $MODEL_SOURCE"
     fi
     
-    python3 $PARENT_DIR/src/unified_finetune.py \
+    python3 -m lra_simple.unified_finetune \
         --task "$TASK" \
         --data_dir "$DATA_DIR" \
         $TRAIN_SPLIT_ARG \

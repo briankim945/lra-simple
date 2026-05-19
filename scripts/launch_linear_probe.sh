@@ -15,7 +15,6 @@ set -e
 # DEFAULT CONFIGURATION
 # =============================================================================
 
-PARENT_DIR=""
 TASK=""
 DATA_DIR=""
 TRAIN_SPLIT=""
@@ -224,7 +223,7 @@ run_gpu() {
         MODEL_ARG="--models_csv $MODEL_SOURCE"
     fi
     
-    python3 $PARENT_DIR/src/unified_linear_probe.py \
+    python3 -m lra_simple.unified_linear_probe \
         --task "$TASK" \
         --data_dir "$DATA_DIR" \
         $TRAIN_SPLIT_ARG \
