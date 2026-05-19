@@ -21,12 +21,12 @@ import csv
 from filelock import FileLock
 
 # Task-specific imports
-from lra_simple.pathfinder_data import get_pathfinder_datasets
-from lra_simple.cabc_data import get_cabc_datasets
-from lra_simple.planko_data import get_planko_datasets
 from lra_simple.grid_search import grid_search_with_conditionals
-from lra_simple.imagenet_data import get_imagenet_datasets
-from lra_simple.psvrt_data import get_psvrt_datasets
+from lra_simple.data.pathfinder_data import get_pathfinder_datasets
+from lra_simple.data.cabc_data import get_cabc_datasets
+from lra_simple.data.planko_data import get_planko_datasets
+from lra_simple.data.imagenet_data import get_imagenet_datasets
+from lra_simple.data.psvrt_data import get_psvrt_datasets
 
 
 # =============================================================================
