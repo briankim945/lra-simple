@@ -22,64 +22,13 @@ from filelock import FileLock
 
 # Task-specific imports
 from lra_simple.grid_search import grid_search_with_conditionals
+from lra_simple.configs import TASK_CONFIGS, LINEAR_PROBE_GRID, \
+    LINEAR_PROBE_CONDITIONAL_GRIDS, IN_LINEAR_PROBE_GRID
 from lra_simple.data.pathfinder_data import get_pathfinder_datasets
 from lra_simple.data.cabc_data import get_cabc_datasets
 from lra_simple.data.planko_data import get_planko_datasets
 from lra_simple.data.imagenet_data import get_imagenet_datasets
 from lra_simple.data.psvrt_data import get_psvrt_datasets
-
-
-# =============================================================================
-# TASK CONFIGURATIONS
-# =============================================================================
-
-TASK_CONFIGS = {
-    'pathfinder': {
-        'num_classes': 2,
-        'test_splits': ['9', '14', '20'],
-        'default_train_split': '9',
-        'loss': 'cross_entropy',
-    },
-    'cabc': {
-        'num_classes': 1,  # Binary with BCEWithLogitsLoss
-        'test_splits': ['easy', 'medium', 'hard'],
-        'default_train_split': 'easy',
-        'loss': 'bce',
-    },
-    'planko': {
-        'num_classes': 1,  # Binary with BCEWithLogitsLoss
-        'test_splits': ['test'],  # Single test set
-        'default_train_split': 'train',
-        'loss': 'bce',
-    },
-    'imagenet': {
-        'num_classes': 1000,
-        'test_splits': ['val'],
-        'default_train_split': 'train',
-        'loss': 'cross_entropy',
-    },
-    'psvrt': {
-        'num_classes': 2,
-        'test_splits': ['sd_m4_n40', 'sd_m4_n60', 'sd_m4_n120'],
-        'default_train_split': 'sd_m4_n40',
-        'loss': 'cross_entropy',
-        'resize_interpolation': 'nearest',
-    },
-}
-
-# Default grid for linear probing (smaller than fine-tuning grid)
-LINEAR_PROBE_GRID = {
-    "learning_rate": [1e-4, 1e-3, 1e-2, 1e-1],
-    "weight_decay": [0, 1e-4, 1e-3, 1e-2],
-}
-
-IN_LINEAR_PROBE_GRID = {
-    "learning_rate": [5e-4],
-    "weight_decay": [1e-5],
-}
-
-# No conditional grids needed for linear probing (simpler setup)
-CONDITIONAL_GRIDS = {}
 
 
 # =============================================================================
@@ -612,7 +561,7 @@ def run_model_grid_search(
     task_config = TASK_CONFIGS[task]
     train_split = train_split or task_config['default_train_split']
     grid = grid or LINEAR_PROBE_GRID
-    conditional_grids = conditional_grids or CONDITIONAL_GRIDS
+    conditional_grids = conditional_grids or LINEAR_PROBE_CONDITIONAL_GRIDS
     device = torch.device(f'cuda:{gpu}' if torch.cuda.is_available() else 'cpu')
     
     # Always print the header

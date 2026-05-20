@@ -20,57 +20,11 @@ from filelock import FileLock
 
 # Task-specific imports
 from lra_simple.grid_search import grid_search_with_conditionals
+from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL_GRIDS, \
+    FINETUNE_SMALL_BATCH_GRID
 from lra_simple.data.pathfinder_data import get_pathfinder_datasets
 from lra_simple.data.cabc_data import get_cabc_datasets
 from lra_simple.data.planko_data import get_planko_datasets
-
-
-# =============================================================================
-# TASK CONFIGURATIONS
-# =============================================================================
-
-TASK_CONFIGS = {
-    'pathfinder': {
-        'num_classes': 2,
-        'test_splits': ['9', '14', '20'],
-        'default_train_split': '9',
-        'loss': 'cross_entropy',
-    },
-    'cabc': {
-        'num_classes': 1,  # Binary with BCEWithLogitsLoss
-        'test_splits': ['easy', 'medium', 'hard'],
-        'default_train_split': 'easy',
-        'loss': 'bce',
-    },
-    'planko': {
-        'num_classes': 1,  # Binary with BCEWithLogitsLoss
-        'test_splits': ['test'],  # Single test set
-        'default_train_split': 'train',
-        'loss': 'bce',
-    },
-}
-
-# Default grid for fine-tuning
-FINETUNE_GRID = {
-    "learning_rate": [1e-5, 3e-5, 1e-4, 3e-4],
-    "batch_size": [16, 32, 64],
-    "weight_decay": [0, 1e-4, 1e-2],
-    "optimizer": ["adamw", "sgd"],
-}
-
-# Smaller batch sizes for memory-constrained fine-tuning
-SMALL_BATCH_GRID = {
-    "learning_rate": [1e-5, 3e-5, 1e-4, 3e-4],
-    "batch_size": [4, 8, 16],
-    "weight_decay": [0, 1e-4, 1e-2],
-    "optimizer": ["adamw", "sgd"],
-}
-
-CONDITIONAL_GRIDS = {
-    "optimizer": {
-        "sgd": {"momentum": [0.9, 0.99]},
-    }
-}
 
 
 # =============================================================================
@@ -618,7 +572,7 @@ def run_model_grid_search(
     task_config = TASK_CONFIGS[task]
     train_split = train_split or task_config['default_train_split']
     grid = grid or FINETUNE_GRID
-    conditional_grids = conditional_grids or CONDITIONAL_GRIDS
+    conditional_grids = conditional_grids or FINETUNE_CONDITIONAL_GRIDS
     
     print(f"\n{'='*70}")
     print(f"GRID SEARCH: {model_name}")
@@ -748,7 +702,7 @@ def main():
     
     # Task configuration
     parser.add_argument('--task', type=str, required=True,
-                        choices=['pathfinder', 'cabc', 'planko'],
+                        choices=['pathfinder', 'cabc', 'planko', 'pvsrt'],
                         help='Task to run')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to task data')
@@ -818,7 +772,7 @@ def main():
         max_input_size = None
 
     # Select grid based on small_batch flag
-    grid = SMALL_BATCH_GRID if args.small_batch else FINETUNE_GRID
+    grid = FINETUNE_SMALL_BATCH_GRID if args.small_batch else FINETUNE_GRID
 
     # Setup output
     output_dir = Path(args.output_dir)
@@ -873,7 +827,7 @@ def main():
     if max_input_size:
         print(f"Skipping models with input size > {max_input_size}")
     if args.small_batch:
-        print(f"Using small batch grid: {SMALL_BATCH_GRID['batch_size']}")
+        print(f"Using small batch grid: {FINETUNE_SMALL_BATCH_GRID['batch_size']}")
     if args.micro_batch_size:
         print(f"Micro batch size: {args.micro_batch_size} (gradient accumulation enabled)")
     if args.gradient_checkpointing:
