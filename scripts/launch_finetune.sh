@@ -22,7 +22,7 @@ TRAIN_SPLIT=""
 EPOCHS=30
 NUM_WORKERS=4
 OUTPUT_DIR="results"
-GPU_COUNT=4
+GPU_COUNT=1
 MODELS_CSV=""
 MODELS_LIST=""
 SKIP_NON_224=""
@@ -43,7 +43,7 @@ print_usage() {
     echo "Usage: $0 --task TASK --data_dir PATH [OPTIONS]"
     echo ""
     echo "Required:"
-    echo "  --task                   Task name: pathfinder, cabc, or planko"
+    echo "  --task                   Task name: pathfinder, cabc, or psvrt"
     echo "  --data_dir               Path to task data"
     echo ""
     echo "Optional:"
