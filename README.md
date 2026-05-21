@@ -41,7 +41,7 @@ ent letters [Disentangling neural mechanisms for perceptual grouping](https://op
 
 To run linear probing on Pathfinder:
 
-```./launch_linear_probe.sh --task pathfinder --data_dir /path/to/data``
+```./launch_linear_probe.sh --task pathfinder --data_dir /path/to/data```
 
 To run linear probing on Pathfinder with 4 GPUs:
 
