@@ -472,6 +472,9 @@ def finetune_model(
     # finishes, so a crash mid-config can't clobber a previous config's checkpoint
     best_state = None
     best_config = None
+    # Patience is tracked against the last improvement larger than min_delta,
+    # separately from best-epoch selection
+    patience_best_val_acc = 0
     epochs_without_improvement = 0
     history = {'train_acc': [], 'val_acc': [], 'train_loss': [], 'val_loss': []}
 
@@ -491,11 +494,10 @@ def finetune_model(
 
         scheduler.step()
 
-        # Check for improvement
-        if val_acc > best_val_acc + min_delta:
+        # Best-epoch selection: any strict improvement
+        if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_epoch = epoch
-            epochs_without_improvement = 0
 
             if val_acc > prev_best_val_acc:
                 # Clone to CPU: state_dict() shares storage with the live parameters
@@ -515,6 +517,11 @@ def finetune_model(
                     'best_val_acc': val_acc,
                 }
                 print(f"  ✓ New best snapshot (val_acc: {val_acc:.2f}%)")
+
+        # Early-stopping patience: only improvements larger than min_delta reset it
+        if val_acc > patience_best_val_acc + min_delta:
+            patience_best_val_acc = val_acc
+            epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
         
