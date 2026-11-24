@@ -422,6 +422,10 @@ def finetune_model(
     best_val_acc = 0
     best_epoch = 0
     saved_new_best = False
+    # Best weights are held on CPU and only written to disk once this config
+    # finishes, so a crash mid-config can't clobber a previous config's checkpoint
+    best_state = None
+    best_config = None
     epochs_without_improvement = 0
     history = {'train_acc': [], 'val_acc': [], 'train_loss': [], 'val_loss': []}
 
@@ -448,9 +452,9 @@ def finetune_model(
             epochs_without_improvement = 0
 
             if val_acc > prev_best_val_acc:
-                torch.save(model.state_dict(), output_path / 'best_model.pth')
-                
-                config = {
+                # Clone to CPU: state_dict() shares storage with the live parameters
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                best_config = {
                     'model_name': model_name,
                     'task': task,
                     'train_split': train_split,
@@ -464,11 +468,7 @@ def finetune_model(
                     'best_epoch': epoch,
                     'best_val_acc': val_acc,
                 }
-                with open(output_path / 'config.json', 'w') as f:
-                    json.dump(config, f, indent=2)
-                
-                saved_new_best = True
-                print(f"  ✓ New best model saved (val_acc: {val_acc:.2f}%)")
+                print(f"  ✓ New best snapshot (val_acc: {val_acc:.2f}%)")
         else:
             epochs_without_improvement += 1
         
@@ -477,12 +477,12 @@ def finetune_model(
             print(f"  Early stopping triggered at epoch {epoch+1} (no improvement for {patience} epochs)")
             break
 
-    # Cross-split evaluation (only if we saved a new best)
+    # Cross-split evaluation (only if this config beat the previous best)
     history['test_acc'] = {}
-    
-    if saved_new_best:
+
+    if best_state is not None:
         print(f"\nCross-split evaluation:")
-        model.load_state_dict(torch.load(output_path / 'best_model.pth'))
+        model.load_state_dict(best_state)
         
         for test_split in task_config['test_splits']:
             # Reuse test_dataset from initial split when test_split == train_split
@@ -499,6 +499,13 @@ def finetune_model(
             _, test_acc = evaluate(model, test_loader, criterion, device, use_amp, task)
             history['test_acc'][test_split] = test_acc
             print(f"  {test_split}: {test_acc:.2f}%")
+
+        # Config finished: now safe to overwrite the previous best on disk
+        torch.save(best_state, output_path / 'best_model.pth')
+        with open(output_path / 'config.json', 'w') as f:
+            json.dump(best_config, f, indent=2)
+        saved_new_best = True
+        print(f"  ✓ New best model saved (val_acc: {best_val_acc:.2f}%)")
 
     # Package results
     history['best_val_acc'] = best_val_acc

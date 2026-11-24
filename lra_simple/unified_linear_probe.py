@@ -732,7 +732,9 @@ def run_model_grid_search(
                     
                     if val_acc > best_val_acc:
                         best_val_acc = val_acc
-                        best_probe = probe.state_dict().copy()
+                        # Clone tensors: state_dict() shares storage with the live
+                        # parameters, so a shallow copy would track later updates
+                        best_probe = {k: v.detach().clone() for k, v in probe.state_dict().items()}
                         best_result = {
                             'best_val_acc': best_val_acc,
                             'best_epoch': config_best_epoch,
