@@ -180,8 +180,8 @@ if [[ -z "$DATA_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko)$ ]]; then
-    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko"
+if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt)$ ]]; then
+    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt"
     exit 1
 fi
 
