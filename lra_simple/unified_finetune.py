@@ -615,7 +615,9 @@ def run_model_grid_search(
         Dict with best_val_acc and best_result
     """
     import sys
-    
+    import gc
+    import traceback
+
     def log(msg, override=False):
         """Print with timestamp and flush immediately (only if verbose)."""
         if verbose or override:
@@ -639,6 +641,10 @@ def run_model_grid_search(
 
     # Create lock for log_file
     json_lock = FileLock(log_file + ".lock")
+
+    # Per-config results (one JSON line per config) sit next to the main log
+    configs_file = str(Path(log_file).with_name(Path(log_file).stem + '_configs.jsonl'))
+    configs_lock = FileLock(configs_file + ".lock")
 
     # Check if already done successfully (skip if val_acc > 0)
     log("Checking for existing results...")
@@ -667,11 +673,25 @@ def run_model_grid_search(
 
     best_val_acc = 0
     best_result = {}
+    status_counts = {'ok': 0, 'oom': 0, 'error': 0}
 
     for idx, config in enumerate(configs):
         print(f"\n>>> Config {idx+1}/{len(configs)}: "
               f"lr={config['learning_rate']:.0e}, bs={config['batch_size']}, "
               f"wd={config['weight_decay']:.0e}, opt={config['optimizer']}")
+
+        record = {
+            'model_name': model_name,
+            'task': task,
+            'train_split': train_split,
+            'config_idx': idx,
+            'config': config,
+            'status': 'ok',
+            'best_val_acc': None,
+            'best_epoch': None,
+            'test_acc': None,
+            'error': None,
+        }
 
         try:
             history = finetune_model(
@@ -697,6 +717,11 @@ def run_model_grid_search(
                 min_delta=min_delta
             )
 
+            record['best_val_acc'] = history['best_val_acc']
+            record['best_epoch'] = history['best_epoch']
+            # Test accuracies are only computed for configs that beat the previous best
+            record['test_acc'] = history.get('test_acc') or None
+
             if history['best_val_acc'] > best_val_acc:
                 best_val_acc = history['best_val_acc']
                 best_result = {
@@ -706,9 +731,40 @@ def run_model_grid_search(
                     'config': history['config']
                 }
 
+        except torch.cuda.OutOfMemoryError as e:
+            # Keep going: a smaller batch size later in the grid may still fit
+            record['status'] = 'oom'
+            record['error'] = str(e).split('\n')[0]
+            print(f"OOM: {record['error']}")
+
         except Exception as e:
+            record['status'] = 'error'
+            record['error'] = str(e)
             print(f"ERROR: {e}")
-            continue
+            traceback.print_exc()
+
+        # Free GPU memory only after the except block has released the traceback,
+        # which otherwise keeps the failed config's model alive
+        if record['status'] == 'oom':
+            gc.collect()
+            torch.cuda.empty_cache()
+        status_counts[record['status']] += 1
+
+        record['timestamp'] = datetime.now().isoformat(timespec='seconds')
+        with configs_lock:
+            with open(configs_file, 'a') as f:
+                f.write(json.dumps(record) + '\n')
+
+    # Every config ran out of memory: raise so main() records the error and
+    # counts it toward the consecutive-OOM exit
+    if status_counts['oom'] == len(configs):
+        raise torch.cuda.OutOfMemoryError(
+            f"All {len(configs)} configs ran out of memory for {model_name}"
+        )
+
+    if status_counts['oom']:
+        print(f"WARNING: {status_counts['oom']}/{len(configs)} configs ran out of memory; "
+              f"best result is only among the configs that fit")
 
     # Save results
     final_result = {
