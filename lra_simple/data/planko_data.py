@@ -203,34 +203,3 @@ def get_planko_datasets(planko_root, transform=None, train_ratio=0.9, val_ratio=
     print(f"  Test:  {len(test_dataset)} samples")
 
     return train_dataset, val_dataset, test_dataset
-
-
-if __name__ == "__main__":
-    # Quick test
-    import sys
-    sys.path.insert(0, '.')
-    from lra_simple.data.data_utils import get_transform_wo_crop
-    import timm
-
-    # Create a simple transform
-    model = timm.create_model('resnet50.a1_in1k', pretrained=False)
-    data_config = timm.data.resolve_model_data_config(model)
-    transform = get_transform_wo_crop(data_config)
-
-    # Test dataset loading
-    planko_root = "/media/data_cifs_lrs/projects/prj_vis_sim/plankdatasets/singbaskv3"
-
-    train_ds, val_ds, test_ds = get_planko_datasets(
-        planko_root=planko_root,
-        transform=transform
-    )
-
-    # Test a sample
-    img, label = train_ds[0]
-    print(f"\nSample image shape: {img.shape}")
-    print(f"Sample label: {label}")
-    print(f"\nLabel distribution (first 1000 train samples):")
-    labels = [train_ds[i][1] for i in range(min(1000, len(train_ds)))]
-    unique, counts = np.unique(labels, return_counts=True)
-    for val, count in zip(unique, counts):
-        print(f"  Label {val}: {count} ({count/len(labels)*100:.1f}%)")
