@@ -2,7 +2,7 @@
 """
 Unified Fine-tuning Script for Vision Tasks
 
-Supports: PathFinder, CABC, Planko, ImageNet, and PSVRT
+Supports: PathFinder, CABC, Planko, ImageNet, PSVRT, and Tilt
 Can run single model or batch with grid search across multiple GPUs.
 """
 
@@ -11,6 +11,7 @@ import json
 import os
 import timm
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
@@ -23,15 +24,40 @@ from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL
     FINETUNE_SMALL_BATCH_GRID
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
-    summarise_score, is_better, worst_score, format_score
+    summarise_score, is_better, worst_score, format_score, default_min_delta, \
+    center_readout_spec, center_features, describe_center_readout
 
 
 # =============================================================================
 # MODEL CREATION
 # =============================================================================
 
-def create_model(model_name, num_classes, pretrained=True):
-    """Create a TIMM model with the appropriate head."""
+class CenterReadoutModel(nn.Module):
+    """Backbone plus a linear head on its center feature (see common.center_features)."""
+
+    def __init__(self, backbone, center_spec, feature_dim, num_classes):
+        super().__init__()
+        self.backbone = backbone
+        self.center_spec = center_spec
+        self.head = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x):
+        return self.head(center_features(self.backbone, x, self.center_spec))
+
+    def set_grad_checkpointing(self, enable=True):
+        self.backbone.set_grad_checkpointing(enable)
+
+
+def create_model(model_name, num_classes, pretrained=True, task=None, input_size=None):
+    """
+    Create a TIMM model with the appropriate head. Center-readout tasks get a
+    linear head on the center feature instead of the model's pooled head.
+    """
+    if task is not None and TASK_CONFIGS[task].get('readout') == 'center':
+        backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+        center_spec, feature_dim = center_readout_spec(backbone, input_size)
+        print(f"Center readout: {describe_center_readout(center_spec)}")
+        return CenterReadoutModel(backbone, center_spec, feature_dim, num_classes)
     model = timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
     return model
 
@@ -158,7 +184,7 @@ def finetune_model(
     gradient_checkpointing=False,
     early_stopping=False,
     patience=5,
-    min_delta=0.1
+    min_delta=None
 ):
     """
     Fine-tune a model on a specific task.
@@ -173,6 +199,8 @@ def finetune_model(
     task_config = TASK_CONFIGS[task]
     if prev_best_val_acc is None:
         prev_best_val_acc = worst_score(task)
+    if min_delta is None:
+        min_delta = default_min_delta(task)
     device = torch.device(f'cuda:{gpu}' if torch.cuda.is_available() else 'cpu')
     
     # Calculate gradient accumulation
@@ -204,7 +232,8 @@ def finetune_model(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Create model
-    model = create_model(model_name, task_config['num_classes'], pretrained=True)
+    model = create_model(model_name, task_config['num_classes'], pretrained=True,
+                         task=task, input_size=model_cfg['input_size'])
     
     # Enable gradient checkpointing if requested (saves memory, slower training)
     if gradient_checkpointing:
@@ -378,7 +407,7 @@ def run_model_grid_search(
     gradient_checkpointing=False,
     early_stopping=False,
     patience=5,
-    min_delta=0.1,
+    min_delta=None,
     micro_batch_size=None
 ):
     """
@@ -400,7 +429,8 @@ def run_model_grid_search(
         gradient_checkpointing: Enable gradient checkpointing to save memory
         early_stopping: Enable early stopping
         patience: Epochs without improvement before stopping
-        min_delta: Minimum improvement to count as better
+        min_delta: Minimum improvement to reset patience, in the task's units
+                   (None: the task's default, 0.1% or 0°)
         micro_batch_size: Actual batch size in memory (enables gradient accumulation)
         
     Returns:
@@ -648,8 +678,9 @@ def main():
                         help='Enable early stopping based on validation accuracy')
     parser.add_argument('--patience', type=int, default=5,
                         help='Early stopping patience - epochs without improvement (default: 5)')
-    parser.add_argument('--min_delta', type=float, default=0.1,
-                        help='Minimum improvement in val_acc to count as improvement (default: 0.1%%)')
+    parser.add_argument('--min_delta', type=float, default=None,
+                        help='Minimum val improvement to reset early-stopping patience, in the '
+                             "task's units (default: 0.1%% for accuracy, 0° for angular error)")
     
     # Output
     parser.add_argument('--output_dir', type=str, default='results')
@@ -663,6 +694,8 @@ def main():
                         help='Enable detailed logging with timestamps (slower but useful for debugging)')
 
     args = parser.parse_args()
+    if args.min_delta is None:
+        args.min_delta = default_min_delta(args.task)
 
     # Determine max input size for filtering
     if args.max_input_size:

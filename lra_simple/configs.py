@@ -58,6 +58,9 @@ FINETUNE_CONDITIONAL_GRIDS = {
 # Optional keys:
 #   resize_interpolation 'nearest' or 'bicubic' (default: bilinear)
 #   linear_probe_grid    Overrides LINEAR_PROBE_GRID for this task
+#   readout              'center': read the backbone's center token / spatial
+#                        position instead of its pooled output
+#   period               For '2d_mse': the angle's period in degrees
 
 TASK_CONFIGS = {
     'pathfinder': {
@@ -91,5 +94,13 @@ TASK_CONFIGS = {
         'default_train_split': 'sd_m4_n40',
         'loss': 'cross_entropy',
         'resize_interpolation': 'nearest',
+    },
+    'tilt': {
+        'num_classes': 2,  # Regresses (sin 2θ, cos 2θ)
+        'test_splits': ['test'],  # Single test set
+        'default_train_split': 'train',
+        'loss': '2d_mse',
+        'period': 180,  # Orientation repeats every 180°
+        'readout': 'center',  # Center-surround stimulus: read the center only
     },
 }

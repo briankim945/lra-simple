@@ -43,7 +43,7 @@ print_usage() {
     echo "Usage: $0 --task TASK --data_dir PATH [OPTIONS]"
     echo ""
     echo "Required:"
-    echo "  --task                   Task name: pathfinder, cabc, or psvrt"
+    echo "  --task                   Task name: pathfinder, cabc, planko, imagenet, psvrt, or tilt"
     echo "  --data_dir               Path to task data"
     echo ""
     echo "Optional:"
@@ -67,7 +67,7 @@ print_usage() {
     echo "Early stopping:"
     echo "  --early_stopping         Enable early stopping based on validation accuracy"
     echo "  --patience N             Epochs without improvement before stopping (default: 5)"
-    echo "  --min_delta N            Minimum improvement to count as better (default: 0.1%)"
+    echo "  --min_delta N            Minimum improvement to reset patience (default: 0.1% accuracy, 0° for tilt)"
     echo ""
     echo "Debugging:"
     echo "  --verbose                Enable detailed logging (slower, for debugging)"
@@ -180,8 +180,9 @@ if [[ -z "$DATA_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt)$ ]]; then
-    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt"
+# Keep in sync with TASK_CONFIGS in lra_simple/configs.py
+if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt|tilt)$ ]]; then
+    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt, tilt"
     exit 1
 fi
 
@@ -251,7 +252,7 @@ echo "Gradient checkpointing: ${GRADIENT_CHECKPOINTING:-'no'}"
 echo "Early stopping:        ${EARLY_STOPPING:-'no'}"
 if [[ -n "$EARLY_STOPPING" ]]; then
     echo "  Patience:            ${PATIENCE:-'5 (default)'}"
-    echo "  Min delta:           ${MIN_DELTA:-'0.1% (default)'}"
+    echo "  Min delta:           ${MIN_DELTA:-'task default'}"
 fi
 echo "Verbose:               ${VERBOSE:-'no'}"
 echo "============================================================"

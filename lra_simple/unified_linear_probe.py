@@ -2,7 +2,7 @@
 """
 Unified Linear Probing Script for Vision Tasks
 
-Supports: PathFinder, CABC, Planko, ImageNet, and PSVRT
+Supports: PathFinder, CABC, Planko, ImageNet, PSVRT, and Tilt
 Fast screening of models by training only a linear head on frozen features.
 Can run single model or batch with grid search across multiple GPUs.
 """
@@ -25,7 +25,8 @@ from lra_simple.configs import TASK_CONFIGS, LINEAR_PROBE_GRID, \
     LINEAR_PROBE_CONDITIONAL_GRIDS
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
-    summarise_score, is_better, worst_score, format_score
+    summarise_score, is_better, worst_score, format_score, center_readout_spec, \
+    center_features, describe_center_readout
 
 
 # =============================================================================
@@ -68,20 +69,31 @@ class LinearProbe(nn.Module):
 # =============================================================================
 
 @torch.no_grad()
-def extract_features(model, data_loader, device, desc="Extracting", use_amp=True):
-    """Extract features from a frozen backbone."""
+def extract_features(model, data_loader, device, desc="Extracting", use_amp=True,
+                     center_spec=None):
+    """
+    Extract features from a frozen backbone.
+
+    By default this is the backbone's pooled output; with center_spec (from
+    common.center_readout_spec) it is the feature at the image center.
+    """
     model.eval()
     features = []
     labels = []
-    
+
+    def forward(images):
+        if center_spec is not None:
+            return center_features(model, images, center_spec)
+        return model(images)
+
     for images, targets in tqdm(data_loader, desc=desc, leave=False):
         images = images.to(device)
-        
+
         if use_amp:
             with torch.amp.autocast('cuda'):
-                feats = model(images)
+                feats = forward(images)
         else:
-            feats = model(images)
+            feats = forward(images)
         
         features.append(feats.cpu())
         labels.append(targets)
@@ -221,7 +233,14 @@ def run_model_grid_search(
     backbone = backbone.to(device)
     backbone.eval()
     log("Model loaded successfully")
-    
+
+    # Center-readout tasks read the center feature instead of the pooled output
+    readout = {}
+    if task_config.get('readout') == 'center':
+        center_spec, _ = center_readout_spec(backbone, model_cfg['input_size'])
+        readout = {'center_spec': center_spec}
+        log(f"Center readout: {describe_center_readout(center_spec)}", override=True)
+
     # Load datasets
     log("Creating transform...")
     resize_interp = task_config.get('resize_interpolation')
@@ -244,13 +263,13 @@ def run_model_grid_search(
     # Extract features
     log("Extracting train features...")
     train_features, train_labels = extract_features(
-        backbone, train_loader, device, "Train features", use_amp=True
+        backbone, train_loader, device, "Train features", use_amp=True, **readout
     )
     log(f"Train features extracted: {train_features.shape}", override=True)
     
     log("Extracting val features...")
     val_features, val_labels = extract_features(
-        backbone, val_loader, device, "Val features", use_amp=True
+        backbone, val_loader, device, "Val features", use_amp=True, **readout
     )
     log(f"Val features extracted: {val_features.shape}", override=True)
     
@@ -273,7 +292,8 @@ def run_model_grid_search(
             num_workers=num_workers, pin_memory=True
         )
         test_feats, test_labs = extract_features(
-            backbone, test_loader, device, f"Test features ({test_split})", use_amp=True
+            backbone, test_loader, device, f"Test features ({test_split})", use_amp=True,
+            **readout
         )
         test_features[test_split] = (test_feats, test_labs)
         log(f"Test features ({test_split}) extracted: {test_feats.shape}")

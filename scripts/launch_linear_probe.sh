@@ -38,7 +38,7 @@ print_usage() {
     echo "Usage: $0 --task TASK --data_dir PATH [OPTIONS]"
     echo ""
     echo "Required:"
-    echo "  --task              Task name: pathfinder, cabc, or psvrt"
+    echo "  --task              Task name: pathfinder, cabc, planko, imagenet, psvrt, or tilt"
     echo "  --data_dir          Path to task data"
     echo ""
     echo "Optional:"
@@ -145,8 +145,9 @@ if [[ -z "$DATA_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt)$ ]]; then
-    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt"
+# Keep in sync with TASK_CONFIGS in lra_simple/configs.py
+if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt|tilt)$ ]]; then
+    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt, tilt"
     exit 1
 fi
 

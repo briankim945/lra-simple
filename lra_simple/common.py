@@ -16,6 +16,7 @@ from lra_simple.data.cabc_data import get_cabc_datasets
 from lra_simple.data.planko_data import get_planko_datasets
 from lra_simple.data.imagenet_data import get_imagenet_datasets
 from lra_simple.data.psvrt_data import get_psvrt_datasets
+from lra_simple.data.tilt_orientation_data import get_tilt_datasets
 
 
 # =============================================================================
@@ -37,6 +38,9 @@ DATASET_LOADERS = {
         data_dir, transform=transform, **ratios),
     'psvrt': lambda data_dir, split, transform, **ratios: get_psvrt_datasets(
         data_dir, split=split, transform=transform, **ratios),
+    # Tilt has a single split
+    'tilt': lambda data_dir, split, transform, **ratios: get_tilt_datasets(
+        data_dir, transform=transform, **ratios),
 }
 assert set(DATASET_LOADERS) == set(TASK_CONFIGS), \
     "DATASET_LOADERS and TASK_CONFIGS must list the same tasks"
@@ -77,14 +81,29 @@ def _bce_targets(labels):
     return labels.float().unsqueeze(1)
 
 
-def _bce_correct(outputs, targets):
+def _bce_correct(outputs, targets, task_config):
     predicted = (torch.sigmoid(outputs) > 0.5).float()
     return (predicted == targets).sum().item()
 
 
-def _ce_correct(outputs, targets):
+def _ce_correct(outputs, targets, task_config):
     _, predicted = outputs.max(1)
     return predicted.eq(targets).sum().item()
+
+
+def _angular_error_sum(outputs, targets, task_config):
+    """
+    Summed absolute angular error in degrees. Outputs and targets are
+    (sin kθ, cos kθ) with k = 360 / period, e.g. k = 2 for orientation.
+    """
+    period = task_config['period']
+    k = 360. / period
+    outputs, targets = outputs.float(), targets.float()
+    pred_deg = (torch.rad2deg(torch.atan2(outputs[:, 0], outputs[:, 1])) / k) % period
+    true_deg = (torch.rad2deg(torch.atan2(targets[:, 0], targets[:, 1])) / k) % period
+    error = torch.abs(pred_deg - true_deg)
+    error = torch.minimum(error, period - error)  # wrap around the period
+    return error.sum().item()
 
 
 LOSSES = {
@@ -95,6 +114,7 @@ LOSSES = {
         'scale': 100.,               # report accuracy in %
         'higher_is_better': True,
         'unit': '%',
+        'default_min_delta': 0.1,
     },
     'bce': {
         'criterion': nn.BCEWithLogitsLoss,
@@ -103,6 +123,17 @@ LOSSES = {
         'scale': 100.,
         'higher_is_better': True,
         'unit': '%',
+        'default_min_delta': 0.1,
+    },
+    # Regression of an angle as (sin, cos); reported as mean absolute error
+    '2d_mse': {
+        'criterion': nn.MSELoss,
+        'prepare_targets': lambda labels: labels.float(),
+        'batch_score': _angular_error_sum,
+        'scale': 1.,
+        'higher_is_better': False,
+        'unit': '°',
+        'default_min_delta': 0.,
     },
 }
 assert all(cfg['loss'] in LOSSES for cfg in TASK_CONFIGS.values()), \
@@ -122,8 +153,13 @@ def prepare_targets(task, labels):
 
 
 def batch_score(task, outputs, targets):
-    """Summable score for one batch (e.g. number of correct predictions)."""
-    return _loss(task)['batch_score'](outputs, targets)
+    """Summable score for one batch (e.g. number correct, or summed error)."""
+    return _loss(task)['batch_score'](outputs, targets, TASK_CONFIGS[task])
+
+
+def default_min_delta(task):
+    """Early-stopping margin in the task's own units (% or degrees)."""
+    return _loss(task)['default_min_delta']
 
 
 def summarise_score(task, score_sum, count):
@@ -145,6 +181,79 @@ def worst_score(task):
 
 def format_score(task, value):
     return f"{value:.2f}{_loss(task)['unit']}"
+
+
+# =============================================================================
+# CENTER READOUT
+# =============================================================================
+# Tasks with readout='center' (e.g. tilt) read the feature at the image center
+# from forward_features instead of the backbone's pooled output. The linear
+# probe and fine-tuning both go through center_features, so they read the
+# same feature.
+
+def center_readout_spec(backbone, input_size):
+    """
+    Locate the center of the backbone's final-layer output.
+
+    Returns (spec, feature_dim). spec is a dict with:
+      kind:  'token' for ViT-style (B, N, C) outputs, 'spatial' for
+             channels-first (B, C, H, W) maps
+      index: the center token (int), or the center (h, w) position
+      grid:  the (H, W) patch grid or feature map size
+    Raises ValueError for layouts without a well-defined center.
+    """
+    name = type(backbone).__name__
+    device = next(backbone.parameters()).device
+    was_training = backbone.training
+    backbone.eval()
+    with torch.no_grad():
+        out = backbone.forward_features(torch.zeros(1, 3, *input_size, device=device))
+    backbone.train(was_training)
+
+    def unsupported(why):
+        return ValueError(f"Center readout is not supported for {name}: {why}")
+
+    if not torch.is_tensor(out):
+        raise unsupported("forward_features does not return a single tensor")
+
+    channels = getattr(backbone, 'num_features', None)
+    if out.dim() == 4:
+        if channels and out.shape[-1] == channels and out.shape[1] != channels:
+            raise unsupported("channels-last feature map (e.g. Swin)")
+        H, W = out.shape[2], out.shape[3]
+        spec = {'kind': 'spatial', 'index': (H // 2, W // 2), 'grid': (H, W)}
+        return spec, out.shape[1]
+
+    if out.dim() == 3:
+        grid = getattr(getattr(backbone, 'patch_embed', None), 'grid_size', None)
+        if grid is None:
+            raise unsupported("tokens without a patch grid (e.g. Twins, Hiera)")
+        n_prefix = out.shape[1] - grid[0] * grid[1]
+        expected = getattr(backbone, 'num_prefix_tokens', n_prefix)
+        if n_prefix < 0 or n_prefix != expected:
+            raise unsupported(f"{out.shape[1]} tokens do not match a {grid[0]}x{grid[1]} "
+                              f"grid with {expected} prefix tokens (e.g. PiT)")
+        index = n_prefix + (grid[0] // 2) * grid[1] + grid[1] // 2
+        spec = {'kind': 'token', 'index': index, 'grid': tuple(grid)}
+        return spec, out.shape[2]
+
+    raise unsupported(f"{out.dim()}-D output")
+
+
+def describe_center_readout(spec):
+    H, W = spec['grid']
+    if spec['kind'] == 'token':
+        return f"token {spec['index']} of {H}x{W} patch grid"
+    return f"spatial position {spec['index']} of {H}x{W} feature map"
+
+
+def center_features(backbone, images, spec):
+    """Center feature vector for each image (spec from center_readout_spec)."""
+    feats = backbone.forward_features(images)
+    if spec['kind'] == 'token':
+        return feats[:, spec['index'], :]
+    h, w = spec['index']
+    return feats[:, :, h, w]
 
 
 # =============================================================================

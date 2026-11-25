@@ -36,6 +36,9 @@ To modify the configurations used in the grid search, modify `lra_simple/configs
 - Cluttered ABC: judge whether two markers fall on the same or differ-
 ent letters [Disentangling neural mechanisms for perceptual grouping](https://openreview.net/forum?id=HJxrVA4FDS)
 - Parametric Synthetic Visual Reasoning Test: comparing image artifacts in separate frames [Not-So-CLEVR: learning same–different relations strains feedforward neural networks](https://royalsocietypublishing.org/rsfs/article/8/4/20180011/64218/Not-So-CLEVR-learning-same-different-relations)
+- Tilt: regressing the orientation of a center grating in a center-surround stimulus. Unlike the other tasks, the model is read out at the center of the image (the center token for ViTs, the center position of the final feature map for CNNs), and results are reported as mean absolute angular error in degrees (lower is better) rather than accuracy. These errors are stored under the same `best_val_acc` / `test_acc` keys as the other tasks' accuracies.
+
+New tasks are registered in `TASK_CONFIGS` (`lra_simple/configs.py`) with a dataset loader in `DATASET_LOADERS` (`lra_simple/common.py`).
 
 ### Example Commands
 
@@ -54,3 +57,7 @@ To run linear probing on cABC and a specified list of models in a text file:
 To run fine-tuning on cABC with a reduced batch size and gradient checkpointing:
 
 ```./launch_finetune.sh --task cabc --data_dir /path/to/data --gpus 4 --small_batch --gradient_checkpointing```
+
+To run linear probing on Tilt (`--data_dir` contains `train/` and `test/`):
+
+```./launch_linear_probe.sh --task tilt --data_dir /path/to/data```
