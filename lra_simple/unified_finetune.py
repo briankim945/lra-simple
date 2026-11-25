@@ -21,7 +21,7 @@ from filelock import FileLock
 # Task-specific imports
 from lra_simple.grid_search import grid_search_with_conditionals
 from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL_GRIDS, \
-    FINETUNE_SMALL_BATCH_GRID
+    FINETUNE_SMALL_BATCH_GRID, FINETUNE_REDUCED_GRID
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
     summarise_score, is_better, worst_score, format_score, default_min_delta, \
@@ -665,9 +665,14 @@ def main():
     parser.add_argument('--skip_errors', action='store_true',
                         help='Skip models that previously errored and are logged')
     
+    # Grid selection (default: FINETUNE_GRID)
+    grid_group = parser.add_mutually_exclusive_group()
+    grid_group.add_argument('--small_batch', action='store_true',
+                            help='Use smaller batch sizes [4, 8, 16] instead of [16, 32, 64]')
+    grid_group.add_argument('--reduced_grid', action='store_true',
+                            help='Use the 6-config FINETUNE_REDUCED_GRID (smoke tests, quick sweeps)')
+
     # Memory optimization
-    parser.add_argument('--small_batch', action='store_true',
-                        help='Use smaller batch sizes [4, 8, 16] instead of [16, 32, 64]')
     parser.add_argument('--micro_batch_size', type=int, default=None,
                         help='Actual batch size in GPU memory (enables gradient accumulation to simulate larger effective batch sizes)')
     parser.add_argument('--gradient_checkpointing', action='store_true',
@@ -705,8 +710,13 @@ def main():
     else:
         max_input_size = None
 
-    # Select grid based on small_batch flag
-    grid = FINETUNE_SMALL_BATCH_GRID if args.small_batch else FINETUNE_GRID
+    # Select grid
+    if args.small_batch:
+        grid = FINETUNE_SMALL_BATCH_GRID
+    elif args.reduced_grid:
+        grid = FINETUNE_REDUCED_GRID
+    else:
+        grid = FINETUNE_GRID
 
     # Setup output
     output_dir = Path(args.output_dir)
@@ -762,6 +772,8 @@ def main():
         print(f"Skipping models with input size > {max_input_size}")
     if args.small_batch:
         print(f"Using small batch grid: {FINETUNE_SMALL_BATCH_GRID['batch_size']}")
+    if args.reduced_grid:
+        print("Using reduced grid (FINETUNE_REDUCED_GRID)")
     if args.micro_batch_size:
         print(f"Micro batch size: {args.micro_batch_size} (gradient accumulation enabled)")
     if args.gradient_checkpointing:

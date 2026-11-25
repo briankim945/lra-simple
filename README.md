@@ -26,15 +26,14 @@ The pipeline uses the trainable attribute of PyTorch models to further fine-tune
 
 ## Usage
 
-Running the tasks is controlled by two scripts: `launch_linear_probe.sh` and  `launch_finetune.sh`. Both scripts require a `--task` flag for the task being evaluated and a `--data_dir` pointing to the dataset being evaluated on. Further optional flags for running the pipeline, including the number of GPUs and the output directory, are provided in the scripts.
+Running the tasks is controlled by two scripts in `scripts/`: `launch_linear_probe.sh` and `launch_finetune.sh`, run from the repo root. Both scripts require a `--task` flag for the task being evaluated, a `--data_dir` pointing to the dataset being evaluated on, and the models to evaluate: either `--models_list` (a text file with one timm model name per line) or `--models_csv` (a CSV with a `model_name` column). Further optional flags for running the pipeline, including the number of GPUs and the output directory, are listed with `--help`.
 
-To modify the configurations used in the grid search, modify `lra_simple/configs.py`.
+To modify the configurations used in the grid search, modify `lra_simple/configs.py`. For a quick fine-tuning run (e.g. a smoke test), `--reduced_grid` uses a 6-configuration grid instead of the full one.
 
 ### Sample Tasks
 
 - Pathfinder: a task for tracing a linear path between two dots on an image [Learning long-range spatial dependencies with horizontal gated recurrent units](https://proceedings.neurips.cc/paper/2018/hash/ec8956637a99787bd197eacd77acce5e-Abstract.html)
-- Cluttered ABC: judge whether two markers fall on the same or differ-
-ent letters [Disentangling neural mechanisms for perceptual grouping](https://openreview.net/forum?id=HJxrVA4FDS)
+- Cluttered ABC: judge whether two markers fall on the same or different letters [Disentangling neural mechanisms for perceptual grouping](https://openreview.net/forum?id=HJxrVA4FDS)
 - Parametric Synthetic Visual Reasoning Test: comparing image artifacts in separate frames [Not-So-CLEVR: learning same–different relations strains feedforward neural networks](https://royalsocietypublishing.org/rsfs/article/8/4/20180011/64218/Not-So-CLEVR-learning-same-different-relations)
 - Tilt: regressing the orientation of a center grating in a center-surround stimulus. Unlike the other tasks, the model is read out at the center of the image (the center token for ViTs, the center position of the final feature map for CNNs), and results are reported as mean absolute angular error in degrees (lower is better) rather than accuracy. These errors are stored under the same `best_val_acc` / `test_acc` keys as the other tasks' accuracies.
 
@@ -42,22 +41,22 @@ New tasks are registered in `TASK_CONFIGS` (`lra_simple/configs.py`) with a data
 
 ### Example Commands
 
-To run linear probing on Pathfinder:
+To run linear probing on Pathfinder for the models listed in `models.txt`:
 
-```./launch_linear_probe.sh --task pathfinder --data_dir /path/to/data```
+```./scripts/launch_linear_probe.sh --task pathfinder --data_dir /path/to/data --models_list models.txt```
 
 To run linear probing on Pathfinder with 4 GPUs:
 
-```./launch_linear_probe.sh --task pathfinder --data_dir /path/to/data --gpus 4```
+```./scripts/launch_linear_probe.sh --task pathfinder --data_dir /path/to/data --models_list models.txt --gpus 4```
 
-To run linear probing on cABC and a specified list of models in a text file:
+To run linear probing on cABC:
 
-```./launch_linear_probe.sh --task cabc --data_dir /path/to/data --models_list models.txt```
+```./scripts/launch_linear_probe.sh --task cabc --data_dir /path/to/data --models_list models.txt```
 
 To run fine-tuning on cABC with a reduced batch size and gradient checkpointing:
 
-```./launch_finetune.sh --task cabc --data_dir /path/to/data --gpus 4 --small_batch --gradient_checkpointing```
+```./scripts/launch_finetune.sh --task cabc --data_dir /path/to/data --models_list models.txt --gpus 4 --small_batch --gradient_checkpointing```
 
 To run linear probing on Tilt (`--data_dir` contains `train/` and `test/`):
 
-```./launch_linear_probe.sh --task tilt --data_dir /path/to/data```
+```./scripts/launch_linear_probe.sh --task tilt --data_dir /path/to/data --models_list models.txt```

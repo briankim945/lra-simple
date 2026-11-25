@@ -37,6 +37,14 @@ FINETUNE_SMALL_BATCH_GRID = {
     "optimizer": ["adamw", "sgd"],
 }
 
+# Reduced grid (6 configs, AdamW only) for smoke tests and quick sweeps
+FINETUNE_REDUCED_GRID = {
+    "learning_rate": [1e-5, 5e-5, 1e-4],
+    "batch_size": [32],
+    "weight_decay": [0, 1e-4],
+    "optimizer": ["adamw"],
+}
+
 FINETUNE_CONDITIONAL_GRIDS = {
     "optimizer": {
         "sgd": {"momentum": [0.9, 0.99]},

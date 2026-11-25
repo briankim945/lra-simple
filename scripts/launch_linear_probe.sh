@@ -4,9 +4,9 @@
 # Runs grid search across multiple GPUs for any supported task
 #
 # Usage:
-#   ./launch_linear_probe.sh --task pathfinder --data_dir /path/to/data --gpus 4
-#   ./launch_linear_probe.sh --task cabc --data_dir /path/to/cabc --gpus 8 --train_split easy
-#   ./launch_linear_probe.sh --task planko --data_dir /path/to/planko --models_list models.txt
+#   ./scripts/launch_linear_probe.sh --task pathfinder --data_dir /path/to/data --gpus 4 --models_list models.txt
+#   ./scripts/launch_linear_probe.sh --task cabc --data_dir /path/to/cabc --gpus 8 --train_split easy --models_list models.txt
+#   ./scripts/launch_linear_probe.sh --task planko --data_dir /path/to/planko --models_list models.txt
 #
 
 set -e
@@ -38,16 +38,16 @@ print_usage() {
     echo "Usage: $0 --task TASK --data_dir PATH [OPTIONS]"
     echo ""
     echo "Required:"
-    echo "  --task              Task name: pathfinder, cabc, planko, imagenet, psvrt, or tilt"
+    echo "  --task              Task name (see TASK_CONFIGS): pathfinder, cabc, planko, imagenet, psvrt, tilt"
     echo "  --data_dir          Path to task data"
     echo ""
     echo "Optional:"
     echo "  --train_split       Training split (default: task-specific)"
     echo "  --epochs            Training epochs per config (default: 30)"
-    echo "  --gpus              Number of GPUs to use (default: 4)"
+    echo "  --gpus              Number of GPUs to use (default: 1)"
     echo "  --output_dir        Output directory (default: results)"
-    echo "  --models_csv        CSV file with model names (default: assets/timm_models.csv)"
-    echo "  --models_list       Text file with model names (overrides --models_csv)"
+    echo "  --models_csv        CSV file with a model_name column (this or --models_list is required)"
+    echo "  --models_list       Text file with one model name per line (overrides --models_csv)"
     echo "  --num_workers       DataLoader workers per GPU (default: 4)"
     echo "  --extract_batch_size Batch size for feature extraction (default: 64)"
     echo "  --dropout_rate      Dropout rate for linear probe (default: 0.0)"
@@ -56,10 +56,10 @@ print_usage() {
     echo "  --skip_errors       Skip models logged as errors previously"
     echo ""
     echo "Examples:"
-    echo "  $0 --task pathfinder --data_dir /data/pathfinder --gpus 8"
-    echo "  $0 --task cabc --data_dir /data/cabc --train_split easy --gpus 4"
+    echo "  $0 --task pathfinder --data_dir /data/pathfinder --gpus 8 --models_list models.txt"
+    echo "  $0 --task cabc --data_dir /data/cabc --train_split easy --gpus 4 --models_list models.txt"
     echo "  $0 --task planko --data_dir /data/planko --models_list top100.txt"
-    echo "  $0 --task pathfinder --data_dir /data/pf --gpus 4 --skip_non_224"
+    echo "  $0 --task pathfinder --data_dir /data/pf --gpus 4 --skip_non_224 --models_list models.txt"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -145,9 +145,16 @@ if [[ -z "$DATA_DIR" ]]; then
     exit 1
 fi
 
-# Keep in sync with TASK_CONFIGS in lra_simple/configs.py
-if [[ ! "$TASK" =~ ^(pathfinder|cabc|planko|imagenet|psvrt|tilt)$ ]]; then
-    echo "Error: Invalid task '$TASK'. Must be one of: pathfinder, cabc, planko, imagenet, psvrt, tilt"
+if [[ -z "$MODELS_LIST" && -z "$MODELS_CSV" ]]; then
+    echo "Error: one of --models_list or --models_csv is required"
+    print_usage
+    exit 1
+fi
+
+# Valid tasks come from the registry in lra_simple/configs.py
+VALID_TASKS=$(python3 -c "from lra_simple.configs import TASK_CONFIGS; print(' '.join(TASK_CONFIGS))")
+if [[ " $VALID_TASKS " != *" $TASK "* ]]; then
+    echo "Error: Invalid task '$TASK'. Must be one of: $VALID_TASKS"
     exit 1
 fi
 
@@ -158,15 +165,21 @@ fi
 # Create directories
 mkdir -p "${OUTPUT_DIR}/logs"
 
-# Determine model source and count
+# Determine model source and count (counted the same way the Python side reads
+# them: non-blank lines of a list, rows of a CSV)
 if [[ -n "$MODELS_LIST" ]]; then
     MODEL_SOURCE="$MODELS_LIST"
-    TOTAL_MODELS=$(wc -l < "$MODELS_LIST")
+    TOTAL_MODELS=$(grep -cv '^[[:space:]]*$' "$MODELS_LIST" || true)
     MODEL_SOURCE_TYPE="list"
 else
     MODEL_SOURCE="$MODELS_CSV"
-    TOTAL_MODELS=$(tail -n +2 "$MODELS_CSV" | wc -l)  # Exclude header
+    TOTAL_MODELS=$(python3 -c "import sys, pandas as pd; print(len(pd.read_csv(sys.argv[1])))" "$MODELS_CSV")
     MODEL_SOURCE_TYPE="csv"
+fi
+
+if [[ "$TOTAL_MODELS" -eq 0 ]]; then
+    echo "Error: no models found in $MODEL_SOURCE"
+    exit 1
 fi
 
 CHUNK_SIZE=$(( (TOTAL_MODELS + GPU_COUNT - 1) / GPU_COUNT ))
@@ -316,13 +329,20 @@ if [[ -f "$CSV_FILE" ]]; then
     echo "Total models completed: $completed / $TOTAL_MODELS"
 fi
 
-# Show top 10 by validation accuracy
+# Show top 10 by validation score (highest accuracy, or lowest error for tilt)
 if [[ -f "$CSV_FILE" ]]; then
     echo ""
-    echo "Top 10 models by validation accuracy:"
-    echo "--------------------------------------"
-    head -1 "$CSV_FILE"
-    tail -n +2 "$CSV_FILE" | sort -t',' -k4 -rn | head -10
+    echo "Top 10 models by validation score:"
+    echo "----------------------------------"
+    python3 - "$CSV_FILE" "$TASK" <<'EOF' || echo "(could not summarise $CSV_FILE)"
+import sys
+import pandas as pd
+from lra_simple.common import LOSSES
+from lra_simple.configs import TASK_CONFIGS
+df = pd.read_csv(sys.argv[1])
+higher_is_better = LOSSES[TASK_CONFIGS[sys.argv[2]]['loss']]['higher_is_better']
+print(df.sort_values('best_val_acc', ascending=not higher_is_better).head(10).to_string(index=False))
+EOF
 fi
 
 echo ""
