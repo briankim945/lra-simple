@@ -11,7 +11,6 @@ import json
 import os
 import timm
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
@@ -23,7 +22,8 @@ from lra_simple.grid_search import grid_search_with_conditionals
 from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL_GRIDS, \
     FINETUNE_SMALL_BATCH_GRID
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
-    get_transform, save_error
+    get_transform, save_error, make_criterion, prepare_targets, batch_score, \
+    summarise_score, is_better, worst_score, format_score
 
 
 # =============================================================================
@@ -44,7 +44,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, use_amp=True,
     """Train for one epoch with optional gradient accumulation."""
     model.train()
     total_loss = 0
-    correct = 0
+    score = 0
     total = 0
 
     scaler = torch.cuda.amp.GradScaler() if use_amp else None
@@ -55,11 +55,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, use_amp=True,
     pbar = tqdm(train_loader, desc='Training', leave=False)
     for batch_idx, (images, labels) in enumerate(pbar):
         images = images.to(device)
-        labels = labels.to(device)
-        
-        # Handle label shape for BCE loss
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            labels = labels.float().unsqueeze(1)
+        labels = prepare_targets(task, labels.to(device))
 
         if use_amp:
             with torch.amp.autocast('cuda'):
@@ -94,16 +90,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, use_amp=True,
         else:
             total_loss += loss.item()
         
-        # Calculate accuracy
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            predicted = (torch.sigmoid(outputs) > 0.5).float()
-            correct += (predicted == labels).sum().item()
-        else:
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(labels).sum().item()
-        
+        score += batch_score(task, outputs, labels)
         total += labels.size(0)
-        pbar.set_postfix({'loss': total_loss / (batch_idx + 1), 'acc': 100. * correct / total})
+        pbar.set_postfix({'loss': total_loss / (batch_idx + 1),
+                          'score': summarise_score(task, score, total)})
     
     # Handle any remaining gradients (if dataset size not divisible by accumulation_steps)
     if (batch_idx + 1) % accumulation_steps != 0:
@@ -114,7 +104,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, use_amp=True,
             optimizer.step()
         optimizer.zero_grad()
 
-    return total_loss / len(train_loader), 100. * correct / total
+    return total_loss / len(train_loader), summarise_score(task, score, total)
 
 
 @torch.no_grad()
@@ -122,15 +112,12 @@ def evaluate(model, loader, criterion, device, use_amp=True, task='pathfinder'):
     """Evaluate model."""
     model.eval()
     total_loss = 0
-    correct = 0
+    score = 0
     total = 0
 
     for images, labels in tqdm(loader, desc='Evaluating', leave=False):
         images = images.to(device)
-        labels = labels.to(device)
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            labels = labels.float().unsqueeze(1)
+        labels = prepare_targets(task, labels.to(device))
 
         if use_amp:
             with torch.amp.autocast('cuda'):
@@ -141,17 +128,10 @@ def evaluate(model, loader, criterion, device, use_amp=True, task='pathfinder'):
             loss = criterion(outputs, labels)
 
         total_loss += loss.item()
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            predicted = (torch.sigmoid(outputs) > 0.5).float()
-            correct += (predicted == labels).sum().item()
-        else:
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(labels).sum().item()
-        
+        score += batch_score(task, outputs, labels)
         total += labels.size(0)
 
-    return total_loss / len(loader), 100. * correct / total
+    return total_loss / len(loader), summarise_score(task, score, total)
 
 
 # =============================================================================
@@ -173,7 +153,7 @@ def finetune_model(
     gpu=0,
     use_amp=True,
     output_dir='results',
-    prev_best_val_acc=0,
+    prev_best_val_acc=None,
     num_workers=4,
     gradient_checkpointing=False,
     early_stopping=False,
@@ -191,6 +171,8 @@ def finetune_model(
     Returns history dict with training metrics and test accuracies.
     """
     task_config = TASK_CONFIGS[task]
+    if prev_best_val_acc is None:
+        prev_best_val_acc = worst_score(task)
     device = torch.device(f'cuda:{gpu}' if torch.cuda.is_available() else 'cpu')
     
     # Calculate gradient accumulation
@@ -214,7 +196,7 @@ def finetune_model(
         print(f"LR: {lr}, BS: {batch_size}, WD: {weight_decay}, Opt: {optimizer_name}")
     print(f"Device: {device}, AMP: {use_amp}, GradCheckpoint: {gradient_checkpointing}")
     if early_stopping:
-        print(f"Early stopping: patience={patience}, min_delta={min_delta}%")
+        print(f"Early stopping: patience={patience}, min_delta={format_score(task, min_delta)}")
     print(f"{'='*70}\n")
 
     # Create output directory
@@ -254,10 +236,7 @@ def finetune_model(
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
     # Loss and optimizer
-    if task_config['loss'] == 'bce':
-        criterion = nn.BCEWithLogitsLoss()
-    else:
-        criterion = nn.CrossEntropyLoss()
+    criterion = make_criterion(task)
 
     if optimizer_name == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -270,7 +249,7 @@ def finetune_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # Training
-    best_val_acc = 0
+    best_val_acc = worst_score(task)
     best_epoch = 0
     saved_new_best = False
     # Best weights are held on CPU and only written to disk once this config
@@ -279,7 +258,7 @@ def finetune_model(
     best_config = None
     # Patience is tracked against the last improvement larger than min_delta,
     # separately from best-epoch selection
-    patience_best_val_acc = 0
+    patience_best_val_acc = worst_score(task)
     epochs_without_improvement = 0
     history = {'train_acc': [], 'val_acc': [], 'train_loss': [], 'val_loss': []}
 
@@ -295,16 +274,17 @@ def finetune_model(
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
 
-        print(f"Epoch {epoch+1}/{epochs}: Train={train_acc:.2f}%, Val={val_acc:.2f}%")
+        print(f"Epoch {epoch+1}/{epochs}: Train={format_score(task, train_acc)}, "
+              f"Val={format_score(task, val_acc)}")
 
         scheduler.step()
 
         # Best-epoch selection: any strict improvement
-        if val_acc > best_val_acc:
+        if is_better(task, val_acc, best_val_acc):
             best_val_acc = val_acc
             best_epoch = epoch
 
-            if val_acc > prev_best_val_acc:
+            if is_better(task, val_acc, prev_best_val_acc):
                 # Clone to CPU: state_dict() shares storage with the live parameters
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 best_config = {
@@ -321,10 +301,10 @@ def finetune_model(
                     'best_epoch': epoch,
                     'best_val_acc': val_acc,
                 }
-                print(f"  ✓ New best snapshot (val_acc: {val_acc:.2f}%)")
+                print(f"  ✓ New best snapshot (val: {format_score(task, val_acc)})")
 
         # Early-stopping patience: only improvements larger than min_delta reset it
-        if val_acc > patience_best_val_acc + min_delta:
+        if is_better(task, val_acc, patience_best_val_acc, margin=min_delta):
             patience_best_val_acc = val_acc
             epochs_without_improvement = 0
         else:
@@ -356,14 +336,14 @@ def finetune_model(
             )
             _, test_acc = evaluate(model, test_loader, criterion, device, use_amp, task)
             history['test_acc'][test_split] = test_acc
-            print(f"  {test_split}: {test_acc:.2f}%")
+            print(f"  {test_split}: {format_score(task, test_acc)}")
 
         # Config finished: now safe to overwrite the previous best on disk
         torch.save(best_state, output_path / 'best_model.pth')
         with open(output_path / 'config.json', 'w') as f:
             json.dump(best_config, f, indent=2)
         saved_new_best = True
-        print(f"  ✓ New best model saved (val_acc: {best_val_acc:.2f}%)")
+        print(f"  ✓ New best model saved (val: {format_score(task, best_val_acc)})")
 
     # Package results
     history['best_val_acc'] = best_val_acc
@@ -406,7 +386,7 @@ def run_model_grid_search(
     
     Args:
         model_name: TIMM model name
-        task: One of 'pathfinder', 'cabc', 'planko', 'imagenet', 'psvrt'
+        task: A key of TASK_CONFIGS
         data_dir: Path to task data
         train_split: Split to train on (uses task default if None)
         epochs: Training epochs per config
@@ -458,7 +438,7 @@ def run_model_grid_search(
     configs_file = str(Path(log_file).with_name(Path(log_file).stem + '_configs.jsonl'))
     configs_lock = FileLock(configs_file + ".lock")
 
-    # Check if already done successfully (skip if val_acc > 0)
+    # Check if already done successfully (skip if it has a real val score)
     log("Checking for existing results...")
     if log_file and os.path.exists(log_file):
         with json_lock:
@@ -466,12 +446,12 @@ def run_model_grid_search(
                 with open(log_file, 'r') as f:
                     results = json.load(f)
                 if model_name in results:
-                    existing_acc = results[model_name].get('best_val_acc', 0)
-                    if existing_acc > 0:
-                        print(f"SKIP: {model_name} already completed (val_acc={existing_acc:.2f}%)")
+                    existing = results[model_name].get('best_val_acc')
+                    if existing is not None and is_better(task, existing, worst_score(task)):
+                        print(f"SKIP: {model_name} already completed (val={format_score(task, existing)})")
                         return None
                     else:
-                        print(f"RETRY: {model_name} previously failed (val_acc=0)")
+                        print(f"RETRY: {model_name} previously failed (no val score)")
             except:
                 pass
 
@@ -483,7 +463,7 @@ def run_model_grid_search(
     model_cfg = get_model_config(model_name)
     print(f"Model input size: {model_cfg['input_size']}, ImageNet default: {model_cfg['is_imagenet_default']}")
 
-    best_val_acc = 0
+    best_val_acc = worst_score(task)
     best_result = {}
     status_counts = {'ok': 0, 'oom': 0, 'error': 0}
 
@@ -534,7 +514,7 @@ def run_model_grid_search(
             # Test accuracies are only computed for configs that beat the previous best
             record['test_acc'] = history.get('test_acc') or None
 
-            if history['best_val_acc'] > best_val_acc:
+            if is_better(task, history['best_val_acc'], best_val_acc):
                 best_val_acc = history['best_val_acc']
                 best_result = {
                     'best_val_acc': history['best_val_acc'],
@@ -608,7 +588,7 @@ def run_model_grid_search(
 
     print(f"\n{'='*70}")
     print(f"COMPLETE: {model_name}")
-    print(f"Best val_acc: {best_val_acc:.2f}%")
+    print(f"Best val: {format_score(task, best_val_acc)}")
     print(f"{'='*70}")
 
     return final_result
@@ -623,7 +603,7 @@ def main():
     
     # Task configuration
     parser.add_argument('--task', type=str, required=True,
-                        choices=['pathfinder', 'cabc', 'planko', 'imagenet', 'psvrt'],
+                        choices=list(TASK_CONFIGS),
                         help='Task to run')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to task data')
@@ -754,7 +734,7 @@ def main():
     if args.gradient_checkpointing:
         print("Gradient checkpointing enabled")
     if args.early_stopping:
-        print(f"Early stopping: patience={args.patience}, min_delta={args.min_delta}%")
+        print(f"Early stopping: patience={args.patience}, min_delta={format_score(args.task, args.min_delta)}")
     sys.stdout.flush()
 
     # Track OOM state

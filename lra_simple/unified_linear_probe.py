@@ -22,9 +22,10 @@ from filelock import FileLock
 # Task-specific imports
 from lra_simple.grid_search import grid_search_with_conditionals
 from lra_simple.configs import TASK_CONFIGS, LINEAR_PROBE_GRID, \
-    LINEAR_PROBE_CONDITIONAL_GRIDS, IN_LINEAR_PROBE_GRID
+    LINEAR_PROBE_CONDITIONAL_GRIDS
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
-    get_transform, save_error
+    get_transform, save_error, make_criterion, prepare_targets, batch_score, \
+    summarise_score, is_better, worst_score, format_score
 
 
 # =============================================================================
@@ -97,34 +98,24 @@ def train_epoch(model, train_loader, criterion, optimizer, device, task='pathfin
     """Train linear probe for one epoch."""
     model.train()
     total_loss = 0
-    correct = 0
+    score = 0
     total = 0
-    
+
     for features, labels in train_loader:
         features = features.to(device)
-        labels = labels.to(device)
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            labels = labels.float().unsqueeze(1)
-        
+        labels = prepare_targets(task, labels.to(device))
+
         optimizer.zero_grad()
         outputs = model(features)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            predicted = (torch.sigmoid(outputs) > 0.5).float()
-            correct += (predicted == labels).sum().item()
-        else:
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(labels).sum().item()
-        
+        score += batch_score(task, outputs, labels)
         total += labels.size(0)
-    
-    return total_loss / len(train_loader), 100. * correct / total
+
+    return total_loss / len(train_loader), summarise_score(task, score, total)
 
 
 @torch.no_grad()
@@ -132,31 +123,21 @@ def evaluate(model, data_loader, criterion, device, task='pathfinder'):
     """Evaluate linear probe."""
     model.eval()
     total_loss = 0
-    correct = 0
+    score = 0
     total = 0
-    
+
     for features, labels in data_loader:
         features = features.to(device)
-        labels = labels.to(device)
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            labels = labels.float().unsqueeze(1)
-        
+        labels = prepare_targets(task, labels.to(device))
+
         outputs = model(features)
         loss = criterion(outputs, labels)
-        
+
         total_loss += loss.item()
-        
-        if TASK_CONFIGS[task]['loss'] == 'bce':
-            predicted = (torch.sigmoid(outputs) > 0.5).float()
-            correct += (predicted == labels).sum().item()
-        else:
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(labels).sum().item()
-        
+        score += batch_score(task, outputs, labels)
         total += labels.size(0)
-    
-    return total_loss / len(data_loader), 100. * correct / total
+
+    return total_loss / len(data_loader), summarise_score(task, score, total)
 
 
 # =============================================================================
@@ -211,7 +192,7 @@ def run_model_grid_search(
     json_lock = FileLock(log_file + ".lock")
     csv_lock = FileLock(csv_file + ".lock")
 
-    # Check if already done successfully (skip if val_acc > 0)
+    # Check if already done successfully (skip if it has a real val score)
     log("Checking for existing results...")
     if log_file and os.path.exists(log_file):
         with json_lock:
@@ -221,12 +202,12 @@ def run_model_grid_search(
             except (json.JSONDecodeError, FileNotFoundError):
                 results = {}
             if model_name in results:
-                existing_acc = results[model_name].get('best_val_acc', 0)
-                if existing_acc > 0:
-                    log(f"SKIP: {model_name} already completed (val_acc={existing_acc:.2f}%)", override=True)
+                existing = results[model_name].get('best_val_acc')
+                if existing is not None and is_better(task, existing, worst_score(task)):
+                    log(f"SKIP: {model_name} already completed (val={format_score(task, existing)})", override=True)
                     return None
                 else:
-                    log(f"RETRY: {model_name} previously failed (val_acc=0)", override=True)
+                    log(f"RETRY: {model_name} previously failed (no val score)", override=True)
 
     # Get model config for transform and metadata
     log("Getting model config...")
@@ -310,7 +291,7 @@ def run_model_grid_search(
     configs = grid_search_with_conditionals(grid, conditional_grids)
     log(f"Starting grid search with {len(configs)} configurations", override=True)
 
-    best_val_acc = 0
+    best_val_acc = worst_score(task)
     best_result = {}
     best_probe = None
     configs_failed = 0
@@ -337,12 +318,8 @@ def run_model_grid_search(
             # Create fresh probe
             probe = LinearProbe(feature_dim, task_config['num_classes'], dropout_rate)
             probe = probe.to(device)
-            
-            if task_config['loss'] == 'bce':
-                criterion = nn.BCEWithLogitsLoss()
-            else:
-                criterion = nn.CrossEntropyLoss()
-            
+            criterion = make_criterion(task)
+
             optimizer = torch.optim.AdamW(
                 probe.parameters(),
                 lr=config['learning_rate'],
@@ -350,9 +327,9 @@ def run_model_grid_search(
             )
             
             # Train
-            config_best_val_acc = 0
+            config_best_val_acc = worst_score(task)
             config_best_epoch = 0
-            
+
             for epoch in range(epochs):
                 train_loss, train_acc = train_epoch(
                     probe, train_feat_loader, criterion, optimizer, device, task
@@ -360,12 +337,12 @@ def run_model_grid_search(
                 val_loss, val_acc = evaluate(
                     probe, val_feat_loader, criterion, device, task
                 )
-                
-                if val_acc > config_best_val_acc:
+
+                if is_better(task, val_acc, config_best_val_acc):
                     config_best_val_acc = val_acc
                     config_best_epoch = epoch
-                    
-                    if val_acc > best_val_acc:
+
+                    if is_better(task, val_acc, best_val_acc):
                         best_val_acc = val_acc
                         # Clone tensors: state_dict() shares storage with the live
                         # parameters, so a shallow copy would track later updates
@@ -379,7 +356,7 @@ def run_model_grid_search(
                             }
                         }
             
-            log(f"  Config {idx+1} done: best_epoch={config_best_epoch+1}, val_acc={config_best_val_acc:.2f}%", override=True)
+            log(f"  Config {idx+1} done: best_epoch={config_best_epoch+1}, val={format_score(task, config_best_val_acc)}", override=True)
             
             del probe
             torch.cuda.empty_cache()
@@ -399,17 +376,13 @@ def run_model_grid_search(
     # Cross-split evaluation with best probe
     test_accs = {}
     if best_probe is not None:
-        log(f"Cross-split evaluation with best probe (val_acc={best_val_acc:.2f}%)", override=True)
-        
+        log(f"Cross-split evaluation with best probe (val={format_score(task, best_val_acc)})", override=True)
+
         probe = LinearProbe(feature_dim, task_config['num_classes'], dropout_rate)
         probe.load_state_dict(best_probe)
         probe = probe.to(device)
-        
-        if task_config['loss'] == 'bce':
-            criterion = nn.BCEWithLogitsLoss()
-        else:
-            criterion = nn.CrossEntropyLoss()
-        
+        criterion = make_criterion(task)
+
         for test_split in task_config['test_splits']:
             test_feats, test_labs = test_features[test_split]
             test_feat_dataset = FeaturesDataset(test_feats, test_labs)
@@ -420,7 +393,7 @@ def run_model_grid_search(
             
             _, test_acc = evaluate(probe, test_feat_loader, criterion, device, task)
             test_accs[test_split] = test_acc
-            log(f"  Test {test_split}: {test_acc:.2f}%")
+            log(f"  Test {test_split}: {format_score(task, test_acc)}")
         
         best_result['test_acc'] = test_accs
         
@@ -518,7 +491,7 @@ def run_model_grid_search(
                 except Exception as e:
                     log(f"CSV save attempt {attempt+1} failed: {e}")
 
-    log(f"COMPLETE: {model_name} - best_val_acc={best_val_acc:.2f}%", override=True)
+    log(f"COMPLETE: {model_name} - best_val={format_score(task, best_val_acc)}", override=True)
     print(f"{'='*70}")
     sys.stdout.flush()
 
@@ -534,7 +507,7 @@ def main():
     
     # Task configuration
     parser.add_argument('--task', type=str, required=True,
-                        choices=['pathfinder', 'cabc', 'planko', 'imagenet', 'psvrt'],
+                        choices=list(TASK_CONFIGS),
                         help='Task to run')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to task data')
@@ -590,7 +563,7 @@ def main():
     err_file = args.err_file or str(output_dir / f'{args.task}_linear_probe_errors.json')
 
     # Set grid
-    grid = IN_LINEAR_PROBE_GRID if args.task == 'imagenet' else LINEAR_PROBE_GRID
+    grid = TASK_CONFIGS[args.task].get('linear_probe_grid', LINEAR_PROBE_GRID)
 
     # Single model mode
     if args.model_name:

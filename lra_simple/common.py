@@ -1,12 +1,16 @@
 """
 Shared helpers for the linear-probe and fine-tuning pipelines:
-dataset loading, model input configs/transforms, and error logging.
+dataset loading, loss/metric handling, model input configs/transforms,
+and error logging.
 """
 
 import json
 import os
 import timm
+import torch
+import torch.nn as nn
 
+from lra_simple.configs import TASK_CONFIGS
 from lra_simple.data.pathfinder_data import get_pathfinder_datasets
 from lra_simple.data.cabc_data import get_cabc_datasets
 from lra_simple.data.planko_data import get_planko_datasets
@@ -18,92 +22,129 @@ from lra_simple.data.psvrt_data import get_psvrt_datasets
 # DATA LOADING
 # =============================================================================
 
-def get_datasets(task, data_dir, split, transform, val_ratio=0.1, train_ratio=0.9):
-    """Get train/val/test datasets for a given task and split."""
-    
-    if task == 'pathfinder':
-        return get_pathfinder_datasets(data_dir, split, transform=transform)
-    
-    elif task == 'cabc':
-        return get_cabc_datasets(
-            cabc_root=data_dir,
-            difficulty=split,
-            transform=transform,
-            val_ratio=val_ratio
-        )
-    
-    elif task == 'planko':
-        return get_planko_datasets(
-            planko_root=data_dir,
-            transform=transform,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio
-        )
+# Adapters giving every loader the same (data_dir, split, transform, **ratios)
+# signature. Ratios are forwarded as given; a loader that doesn't take one
+# (e.g. PSVRT, which has fixed splits) raises a TypeError.
+DATASET_LOADERS = {
+    'pathfinder': lambda data_dir, split, transform, **ratios: get_pathfinder_datasets(
+        data_dir, split, transform=transform, **ratios),
+    'cabc': lambda data_dir, split, transform, **ratios: get_cabc_datasets(
+        cabc_root=data_dir, difficulty=split, transform=transform, **ratios),
+    # Planko has a single split
+    'planko': lambda data_dir, split, transform, **ratios: get_planko_datasets(
+        planko_root=data_dir, transform=transform, **ratios),
+    'imagenet': lambda data_dir, split, transform, **ratios: get_imagenet_datasets(
+        data_dir, transform=transform, **ratios),
+    'psvrt': lambda data_dir, split, transform, **ratios: get_psvrt_datasets(
+        data_dir, split=split, transform=transform, **ratios),
+}
+assert set(DATASET_LOADERS) == set(TASK_CONFIGS), \
+    "DATASET_LOADERS and TASK_CONFIGS must list the same tasks"
 
-    elif task == 'imagenet':
-        return get_imagenet_datasets(
-            data_dir,
-            transform=transform,
-            val_ratio=0.02 # default should be 0.02
-        )
 
-    elif task == 'psvrt':
-        return get_psvrt_datasets(
-            data_dir,
-            split=split,
-            transform=transform,
-        )
+def get_datasets(task, data_dir, split, transform, val_ratio=None, train_ratio=None):
+    """
+    Get train/val/test datasets for a given task and split.
 
-    else:
+    val_ratio / train_ratio of None use the task loader's own default.
+    """
+    if task not in DATASET_LOADERS:
         raise ValueError(f"Unknown task: {task}")
+    ratios = {k: v for k, v in [('val_ratio', val_ratio), ('train_ratio', train_ratio)]
+              if v is not None}
+    return DATASET_LOADERS[task](data_dir, split, transform, **ratios)
 
 
+def get_test_dataset(task, data_dir, split, transform, val_ratio=None, train_ratio=None):
+    """
+    Get just the test dataset for a given split (for cross-split evaluation).
 
-def get_test_dataset(task, data_dir, split, transform):
-    """Get just the test dataset for a given split (for cross-split evaluation)."""
-    
-    if task == 'pathfinder':
-        _, _, test_dataset = get_pathfinder_datasets(data_dir, split, transform=transform)
-        return test_dataset
-    
-    elif task == 'cabc':
-        _, _, test_dataset = get_cabc_datasets(
-            cabc_root=data_dir,
-            difficulty=split,
-            transform=transform,
-            val_ratio=0.1
-        )
-        return test_dataset
-    
-    elif task == 'planko':
-        # Planko only has one test set
-        _, _, test_dataset = get_planko_datasets(
-            planko_root=data_dir,
-            transform=transform,
-            train_ratio=0.9,
-            val_ratio=0.1
-        )
-        return test_dataset
+    Takes the same ratios as get_datasets, since some tasks (e.g. Pathfinder)
+    carve the test set out of the same pool.
+    """
+    return get_datasets(task, data_dir, split, transform,
+                        val_ratio=val_ratio, train_ratio=train_ratio)[2]
 
-    elif task == 'imagenet':
-        _, _, test_dataset = get_imagenet_datasets(
-            data_dir,
-            transform=transform,
-            val_ratio=0.02
-        )
-        return test_dataset
 
-    elif task == 'psvrt':
-        _, _, test_dataset = get_psvrt_datasets(
-            data_dir,
-            split=split,
-            transform=transform,
-        )
-        return test_dataset
+# =============================================================================
+# LOSSES AND METRICS
+# =============================================================================
+# Each loss type defines how labels are shaped for the criterion, how a batch
+# is scored, and which direction is better. Batch scores are summed over an
+# epoch and converted to the reported metric by summarise_score().
 
-    else:
-        raise ValueError(f"Unknown task: {task}")
+def _bce_targets(labels):
+    return labels.float().unsqueeze(1)
 
+
+def _bce_correct(outputs, targets):
+    predicted = (torch.sigmoid(outputs) > 0.5).float()
+    return (predicted == targets).sum().item()
+
+
+def _ce_correct(outputs, targets):
+    _, predicted = outputs.max(1)
+    return predicted.eq(targets).sum().item()
+
+
+LOSSES = {
+    'cross_entropy': {
+        'criterion': nn.CrossEntropyLoss,
+        'prepare_targets': lambda labels: labels,
+        'batch_score': _ce_correct,  # number correct
+        'scale': 100.,               # report accuracy in %
+        'higher_is_better': True,
+        'unit': '%',
+    },
+    'bce': {
+        'criterion': nn.BCEWithLogitsLoss,
+        'prepare_targets': _bce_targets,
+        'batch_score': _bce_correct,
+        'scale': 100.,
+        'higher_is_better': True,
+        'unit': '%',
+    },
+}
+assert all(cfg['loss'] in LOSSES for cfg in TASK_CONFIGS.values()), \
+    "Every TASK_CONFIGS 'loss' must be a key of LOSSES"
+
+
+def _loss(task):
+    return LOSSES[TASK_CONFIGS[task]['loss']]
+
+
+def make_criterion(task):
+    return _loss(task)['criterion']()
+
+
+def prepare_targets(task, labels):
+    return _loss(task)['prepare_targets'](labels)
+
+
+def batch_score(task, outputs, targets):
+    """Summable score for one batch (e.g. number of correct predictions)."""
+    return _loss(task)['batch_score'](outputs, targets)
+
+
+def summarise_score(task, score_sum, count):
+    """Turn a summed batch score into the reported metric (e.g. accuracy %)."""
+    return _loss(task)['scale'] * score_sum / count
+
+
+def is_better(task, new, old, margin=0.0):
+    """Whether metric `new` beats `old` by more than `margin`."""
+    if _loss(task)['higher_is_better']:
+        return new > old + margin
+    return new < old - margin
+
+
+def worst_score(task):
+    """Starting value for best-so-far tracking; any real result beats it."""
+    return 0. if _loss(task)['higher_is_better'] else float('inf')
+
+
+def format_score(task, value):
+    return f"{value:.2f}{_loss(task)['unit']}"
 
 
 # =============================================================================
@@ -155,7 +196,6 @@ def get_model_config(model_name):
     }
 
 
-
 def get_transform(model_name=None, interpolation=None):
     """
     Get transform for a model.
@@ -193,7 +233,6 @@ def get_transform(model_name=None, interpolation=None):
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std)
     ])
-
 
 
 # =============================================================================
