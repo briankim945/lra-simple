@@ -25,7 +25,7 @@ from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
     summarise_score, is_better, worst_score, format_score, default_min_delta, \
-    center_readout_spec, center_features, describe_center_readout
+    center_readout_spec, center_features, describe_center_readout, seed_everything
 
 
 # =============================================================================
@@ -184,7 +184,8 @@ def finetune_model(
     gradient_checkpointing=False,
     early_stopping=False,
     patience=5,
-    min_delta=None
+    min_delta=None,
+    seed=0
 ):
     """
     Fine-tune a model on a specific task.
@@ -193,9 +194,12 @@ def finetune_model(
         batch_size: Effective batch size (for training dynamics)
         micro_batch_size: Actual batch size in memory (for gradient accumulation)
                          If None, uses batch_size directly (no accumulation)
+        seed: Seed applied before anything random (head initialization,
+              shuffle order)
     
     Returns history dict with training metrics and test accuracies.
     """
+    seed_everything(seed)
     task_config = TASK_CONFIGS[task]
     if prev_best_val_acc is None:
         prev_best_val_acc = worst_score(task)
@@ -327,6 +331,7 @@ def finetune_model(
                     'optimizer': optimizer_name,
                     'momentum': momentum,
                     'use_amp': use_amp,
+                    'seed': seed,
                     'best_epoch': epoch,
                     'best_val_acc': val_acc,
                 }
@@ -408,7 +413,8 @@ def run_model_grid_search(
     early_stopping=False,
     patience=5,
     min_delta=None,
-    micro_batch_size=None
+    micro_batch_size=None,
+    seed=0
 ):
     """
     Run grid search for a single model on a specific task.
@@ -432,6 +438,7 @@ def run_model_grid_search(
         min_delta: Minimum improvement to reset patience, in the task's units
                    (None: the task's default, 0.1% or 0°)
         micro_batch_size: Actual batch size in memory (enables gradient accumulation)
+        seed: Seed applied at the start of every grid configuration
         
     Returns:
         Dict with best_val_acc and best_result
@@ -513,6 +520,7 @@ def run_model_grid_search(
             'best_epoch': None,
             'test_acc': None,
             'error': None,
+            'seed': seed,
         }
 
         try:
@@ -536,7 +544,8 @@ def run_model_grid_search(
                 gradient_checkpointing=gradient_checkpointing,
                 early_stopping=early_stopping,
                 patience=patience,
-                min_delta=min_delta
+                min_delta=min_delta,
+                seed=seed
             )
 
             record['best_val_acc'] = history['best_val_acc']
@@ -594,6 +603,7 @@ def run_model_grid_search(
         'best_result': best_result,
         'input_size': model_cfg['input_size'],
         'is_imagenet_default': model_cfg['is_imagenet_default'],
+        'seed': seed,
     }
     
     with json_lock:
@@ -694,6 +704,11 @@ def main():
     parser.add_argument('--err_file', type=str, default=None,
                         help='JSON errors file')
     
+    # Reproducibility
+    parser.add_argument('--seed', type=int, default=0,
+                        help='Seed applied at the start of every grid configuration '
+                             '(head initialization, shuffle order); default: 0')
+
     # Logging
     parser.add_argument('--verbose', action='store_true',
                         help='Enable detailed logging with timestamps (slower but useful for debugging)')
@@ -743,7 +758,8 @@ def main():
             early_stopping=args.early_stopping,
             patience=args.patience,
             min_delta=args.min_delta,
-            micro_batch_size=args.micro_batch_size
+            micro_batch_size=args.micro_batch_size,
+            seed=args.seed
         )
         return
 
@@ -833,7 +849,8 @@ def main():
                 early_stopping=args.early_stopping,
                 patience=args.patience,
                 min_delta=args.min_delta,
-                micro_batch_size=args.micro_batch_size
+                micro_batch_size=args.micro_batch_size,
+                seed=args.seed
             )
             # Reset OOM counter on success
             consecutive_oom_failures = 0

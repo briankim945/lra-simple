@@ -35,6 +35,7 @@ GRADIENT_CHECKPOINTING=""
 EARLY_STOPPING=""
 PATIENCE=""
 MIN_DELTA=""
+SEED=0
 VERBOSE=""
 
 # =============================================================================
@@ -75,8 +76,11 @@ print_usage() {
     echo "  --patience N             Epochs without improvement before stopping (default: 5)"
     echo "  --min_delta N            Minimum improvement to reset patience (default: 0.1% accuracy, 0° for tilt)"
     echo ""
+    echo "Reproducibility:"
+    echo "  --seed N                 Seed applied at the start of every grid config (default: 0)"
+    echo ""
     echo "Debugging:"
-    echo "  --verbose                Enable detailed logging (slower, for debugging)"
+    echo "  --verbose               Enable detailed logging (slower, for debugging)"
     echo ""
     echo "Examples:"
     echo "  $0 --task pathfinder --data_dir /data/pathfinder --gpus 8 --models_list models.txt"
@@ -163,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --min_delta)
             MIN_DELTA="--min_delta $2"
+            shift 2
+            ;;
+        --seed)
+            SEED="$2"
             shift 2
             ;;
         --verbose)
@@ -289,6 +297,7 @@ if [[ -n "$EARLY_STOPPING" ]]; then
     echo "  Min delta:           ${MIN_DELTA:-'task default'}"
 fi
 echo "Verbose:               ${VERBOSE:-'no'}"
+echo "Seed:                  $SEED"
 echo "============================================================"
 echo ""
 
@@ -329,6 +338,7 @@ run_gpu() {
         $EARLY_STOPPING \
         $PATIENCE \
         $MIN_DELTA \
+        --seed "$SEED" \
         $VERBOSE \
         $MODEL_ARG \
         --start_idx "$start_idx" \

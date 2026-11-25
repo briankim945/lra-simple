@@ -6,6 +6,8 @@ and error logging.
 
 import json
 import os
+import random
+import numpy as np
 import timm
 import torch
 import torch.nn as nn
@@ -342,6 +344,23 @@ def get_transform(model_name=None, interpolation=None):
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std)
     ])
+
+
+# =============================================================================
+# SEEDING
+# =============================================================================
+# Each grid configuration is seeded right before it starts, so its result does
+# not depend on which configurations ran before it. Dataset train/val splits
+# use each loader's own fixed seed and are unaffected. DataLoader workers need
+# no separate seeding: PyTorch seeds each worker's random, numpy and torch from
+# the (seeded) main-process torch RNG.
+
+def seed_everything(seed):
+    """Seed Python, numpy and torch (CPU and every GPU)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 # =============================================================================

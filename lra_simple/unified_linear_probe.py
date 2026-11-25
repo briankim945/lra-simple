@@ -26,7 +26,7 @@ from lra_simple.configs import TASK_CONFIGS, LINEAR_PROBE_GRID, \
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
     summarise_score, is_better, worst_score, format_score, center_readout_spec, \
-    center_features, describe_center_readout
+    center_features, describe_center_readout, seed_everything
 
 
 # =============================================================================
@@ -171,12 +171,14 @@ def run_model_grid_search(
     grid=None,
     conditional_grids=None,
     dropout_rate=0.0,
-    verbose=False
+    verbose=False,
+    seed=0
 ):
     """
     Run grid search for a single model on a specific task.
     
     Features are extracted once and reused across all grid configurations.
+    Each configuration starts from the same seeded state.
     """
     import sys
     
@@ -319,6 +321,9 @@ def run_model_grid_search(
     for idx, config in enumerate(configs):
         log(f"Config {idx+1}/{len(configs)}: lr={config['learning_rate']:.0e}, wd={config['weight_decay']:.0e}", override=True)
 
+        # Same start for every config: probe initialization and batch order
+        seed_everything(seed)
+
         try:
             # Create feature datasets
             train_feat_dataset = FeaturesDataset(train_features, train_labels)
@@ -430,6 +435,7 @@ def run_model_grid_search(
                 'train_split': train_split,
                 'best_val_acc': best_val_acc,
                 'test_acc': test_accs,
+                'seed': seed,
                 **best_result.get('config', {})
             }, f, indent=2)
         log("Best probe saved")
@@ -441,6 +447,7 @@ def run_model_grid_search(
         'feature_dim': feature_dim,
         'input_size': model_cfg['input_size'],
         'is_imagenet_default': model_cfg['is_imagenet_default'],
+        'seed': seed,
     }
 
     # Save to JSON log file
@@ -487,6 +494,7 @@ def run_model_grid_search(
             new_row['feature_dim'] = feature_dim
             new_row['input_size'] = f"{model_cfg['input_size'][0]}x{model_cfg['input_size'][1]}"
             new_row['is_imagenet_default'] = model_cfg['is_imagenet_default']
+            new_row['seed'] = seed
             
             # Load existing or create new dataframe
             if os.path.exists(csv_file):
@@ -559,6 +567,11 @@ def main():
     parser.add_argument('--skip_non_224', action='store_true',
                         help='Skip models that expect input size other than 224x224')
     
+    # Reproducibility
+    parser.add_argument('--seed', type=int, default=0,
+                        help='Seed applied at the start of every grid configuration '
+                             '(probe initialization, batch order); default: 0')
+
     # Logging
     parser.add_argument('--verbose', action='store_true',
                         help='Enable detailed logging with timestamps (slower but useful for debugging)')
@@ -601,6 +614,7 @@ def main():
             extract_batch_size=args.extract_batch_size,
             dropout_rate=args.dropout_rate,
             verbose=args.verbose,
+            seed=args.seed,
             grid=grid
         )
         return
@@ -678,6 +692,7 @@ def main():
                 extract_batch_size=args.extract_batch_size,
                 dropout_rate=args.dropout_rate,
                 verbose=args.verbose,
+                seed=args.seed,
                 grid=grid
             )
             # Reset OOM counter on success

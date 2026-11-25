@@ -28,6 +28,7 @@ MODELS_CSV=""
 MODELS_LIST=""
 SKIP_NON_224=""
 SKIP_ERRORS=""
+SEED=0
 VERBOSE=""
 
 # =============================================================================
@@ -52,6 +53,7 @@ print_usage() {
     echo "  --extract_batch_size Batch size for feature extraction (default: 64)"
     echo "  --dropout_rate      Dropout rate for linear probe (default: 0.0)"
     echo "  --skip_non_224      Skip models with non-224x224 input size"
+    echo "  --seed N            Seed applied at the start of every grid config (default: 0)"
     echo "  --verbose           Enable detailed logging (slower, for debugging)"
     echo "  --skip_errors       Skip models logged as errors previously"
     echo ""
@@ -115,6 +117,10 @@ while [[ $# -gt 0 ]]; do
         --skip_errors)
             SKIP_ERRORS="--skip_errors"
             shift 1
+            ;;
+        --seed)
+            SEED="$2"
+            shift 2
             ;;
         --verbose)
             VERBOSE="--verbose"
@@ -215,6 +221,7 @@ echo "Models per GPU:     ~$CHUNK_SIZE"
 echo "Num workers:        $NUM_WORKERS"
 echo "Extract batch size: $EXTRACT_BATCH_SIZE"
 echo "Dropout rate:       $DROPOUT_RATE"
+echo "Seed:               $SEED"
 echo "============================================================"
 echo ""
 
@@ -251,6 +258,7 @@ run_gpu() {
         --dropout_rate "$DROPOUT_RATE" \
         $SKIP_NON_224 \
         $SKIP_ERRORS \
+        --seed "$SEED" \
         $VERBOSE \
         $MODEL_ARG \
         --start_idx "$start_idx" \
