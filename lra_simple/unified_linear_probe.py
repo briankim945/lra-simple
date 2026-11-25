@@ -26,7 +26,7 @@ from lra_simple.configs import TASK_CONFIGS, LINEAR_PROBE_GRID, \
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
     summarise_score, is_better, worst_score, format_score, center_readout_spec, \
-    center_features, describe_center_readout, seed_everything
+    center_features, describe_center_readout, seed_everything, save_checked_checkpoint
 
 
 # =============================================================================
@@ -395,8 +395,11 @@ def run_model_grid_search(
             sys.stdout.flush()
             continue
 
+    # Every config failed: raise so main() records the error and nothing is
+    # logged as a result (a later run retries the model)
     if configs_failed == len(configs):
-        log(f"WARNING: All {len(configs)} configs failed for {model_name}", override=True)
+        raise RuntimeError(f"All {len(configs)} grid configs failed for {model_name}; "
+                           f"see the per-config tracebacks above")
 
     # Cross-split evaluation with best probe
     test_accs = {}
@@ -426,7 +429,21 @@ def run_model_grid_search(
         log("Saving best probe...")
         output_path = Path(output_dir) / task / model_name / f'linear_probe_{train_split}'
         output_path.mkdir(parents=True, exist_ok=True)
-        torch.save(best_probe, output_path / 'best_probe.pth')
+
+        # Reload check: the saved file must reproduce the selected probe's
+        # val score (guards against saving weights other than the ones chosen)
+        val_check_loader = DataLoader(
+            FeaturesDataset(val_features, val_labels), batch_size=128, shuffle=False,
+            num_workers=0, pin_memory=False
+        )
+        def score_reloaded(state):
+            reloaded = LinearProbe(feature_dim, task_config['num_classes'], dropout_rate)
+            reloaded.load_state_dict(state)
+            return evaluate(reloaded.to(device), val_check_loader, criterion, device, task)[1]
+        reloaded_val = save_checked_checkpoint(
+            best_probe, output_path / 'best_probe.pth', task, best_val_acc,
+            len(val_labels), score_reloaded)
+        log(f"Reload check passed (val {format_score(task, reloaded_val)})", override=True)
         
         with open(output_path / 'config.json', 'w') as f:
             json.dump({

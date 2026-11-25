@@ -117,6 +117,7 @@ LOSSES = {
         'higher_is_better': True,
         'unit': '%',
         'default_min_delta': 0.1,
+        'reload_tolerance': lambda n_val: 100. / n_val + 1e-6,  # one val image
     },
     'bce': {
         'criterion': nn.BCEWithLogitsLoss,
@@ -126,6 +127,7 @@ LOSSES = {
         'higher_is_better': True,
         'unit': '%',
         'default_min_delta': 0.1,
+        'reload_tolerance': lambda n_val: 100. / n_val + 1e-6,
     },
     # Regression of an angle as (sin, cos); reported as mean absolute error
     '2d_mse': {
@@ -136,6 +138,7 @@ LOSSES = {
         'higher_is_better': False,
         'unit': '°',
         'default_min_delta': 0.,
+        'reload_tolerance': lambda n_val: 0.01,
     },
 }
 assert all(cfg['loss'] in LOSSES for cfg in TASK_CONFIGS.values()), \
@@ -344,6 +347,37 @@ def get_transform(model_name=None, interpolation=None):
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std)
     ])
+
+
+# =============================================================================
+# CHECKPOINTS
+# =============================================================================
+
+def save_checked_checkpoint(state, path, task, expected_val, n_val, score_fn):
+    """
+    Save a best-model state_dict, but only once it is shown to be the model
+    that was selected.
+
+    The state is written to a temporary file, loaded back, and scored on the
+    validation set by score_fn(state_dict) -> val score. If that does not
+    reproduce expected_val (within the loss's reload_tolerance), the file is
+    discarded and a RuntimeError is raised, leaving any previous checkpoint at
+    `path` untouched. Otherwise the file is moved into place.
+    """
+    path = str(path)
+    tmp = path + '.tmp'
+    torch.save(state, tmp)
+    reloaded = score_fn(torch.load(tmp, map_location='cpu'))
+    tolerance = _loss(task)['reload_tolerance'](n_val)
+    if abs(reloaded - expected_val) > tolerance:
+        os.remove(tmp)
+        unit = _loss(task)['unit']
+        raise RuntimeError(
+            f"RELOAD CHECK FAILED for {path}: the saved weights score "
+            f"{reloaded:.4f}{unit} on validation, but the selected model scored "
+            f"{expected_val:.4f}{unit} (tolerance {tolerance:.4f}{unit})")
+    os.replace(tmp, path)
+    return reloaded
 
 
 # =============================================================================

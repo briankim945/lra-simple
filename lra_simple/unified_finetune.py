@@ -25,7 +25,8 @@ from lra_simple.configs import TASK_CONFIGS, FINETUNE_GRID, FINETUNE_CONDITIONAL
 from lra_simple.common import get_datasets, get_test_dataset, get_model_config, \
     get_transform, save_error, make_criterion, prepare_targets, batch_score, \
     summarise_score, is_better, worst_score, format_score, default_min_delta, \
-    center_readout_spec, center_features, describe_center_readout, seed_everything
+    center_readout_spec, center_features, describe_center_readout, seed_everything, \
+    save_checked_checkpoint
 
 
 # =============================================================================
@@ -372,8 +373,15 @@ def finetune_model(
             history['test_acc'][test_split] = test_acc
             print(f"  {test_split}: {format_score(task, test_acc)}")
 
-        # Config finished: now safe to overwrite the previous best on disk
-        torch.save(best_state, output_path / 'best_model.pth')
+        # Config finished: now safe to overwrite the previous best on disk, once
+        # the saved file is shown to reproduce the selected model's val score
+        def score_reloaded(state):
+            model.load_state_dict(state)
+            return evaluate(model, val_loader, criterion, device, use_amp, task)[1]
+        reloaded_val = save_checked_checkpoint(
+            best_state, output_path / 'best_model.pth', task, best_config['best_val_acc'],
+            len(val_dataset), score_reloaded)
+        print(f"  Reload check passed (val: {format_score(task, reloaded_val)})")
         with open(output_path / 'config.json', 'w') as f:
             json.dump(best_config, f, indent=2)
         saved_new_best = True
@@ -591,6 +599,15 @@ def run_model_grid_search(
     if status_counts['oom'] == len(configs):
         raise torch.cuda.OutOfMemoryError(
             f"All {len(configs)} configs ran out of memory for {model_name}"
+        )
+
+    # No config succeeded (errors, or errors mixed with OOMs): raise rather than
+    # log a placeholder score as a result
+    if status_counts['ok'] == 0:
+        raise RuntimeError(
+            f"All {len(configs)} configs failed for {model_name} "
+            f"({status_counts['error']} errors, {status_counts['oom']} OOM); "
+            f"see {configs_file} for each config's error"
         )
 
     if status_counts['oom']:
