@@ -89,7 +89,8 @@ from lra_simple.common import get_model_config
 
 expected = {
     'vit_small_patch16_224': {'kind': 'token', 'index': 1 + 7 * 14 + 7, 'grid': (14, 14)},
-    'resnet18': {'kind': 'spatial', 'index': (3, 3), 'grid': (7, 7)},
+    # resnet18's default weights have test_input_size 288 (preferred by get_model_config): 288/32 = 9
+    'resnet18': {'kind': 'spatial', 'index': (4, 4), 'grid': (9, 9)},
     'swin_tiny_patch4_window7_224': ValueError,
 }
 ok = True
